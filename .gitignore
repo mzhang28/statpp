@@ -1,0 +1,4 @@
+*.pyc
+.venv
+docker-data
+*_performance_osu_top_*
