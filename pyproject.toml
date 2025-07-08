@@ -5,8 +5,20 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "dotenv>=0.9.9",
+    "joblib>=1.5.1",
     "mysql-connector-python>=9.3.0",
     "numpy>=2.3.1",
+    "pandas>=2.3.0",
+    "pony>=0.7.19",
+    "prefect>=3.4.7",
+    "pymysql>=1.1.1",
+    "scipy>=1.16.0",
     "torch>=2.7.1",
     "tqdm>=4.67.1",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.12.1",
 ]
