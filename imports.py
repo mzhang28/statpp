@@ -29,13 +29,13 @@ def import_beatmaps():
             Beatmap(id=beatmap_id, difficulty=1.0, artist=artist, title=title, diffname=version)
     print("Done.")
 
-@task
+# @task
 def fetch_old_scores(offset, limit):
     cur = conn.cursor()
     cur.execute("select id, user_id, beatmap_id, total_score, data from scores limit %s offset %s", (limit, offset))
     return cur.fetchall()
 
-@task
+# @task
 def insert_new_scores(data):
     with db_session:
         for id, user_id, beatmap_id, total_score, metadata_s in data:
@@ -53,7 +53,7 @@ def insert_new_scores(data):
             Score(id=id, user=user, beatmap=beatmap, score=total_score, score_pp=1.0, mods=mods_s)
 
 
-@flow(log_prints=True)
+# @flow(log_prints=True)
 def import_scores():
     cur = conn.cursor()
     cur.execute(f"select count(*) from scores")

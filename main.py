@@ -42,10 +42,10 @@ def performance_function(actual_score_norm, player_rating, beatmap_difficulty):
     delta_log = log(actual_score_norm) - log(expected)
     return exp(delta_log)  # multiplier on difficulty for pp
 
-def update_beatmap_difficulty(beatmap_id: int, scale: float):
+def update_beatmap_difficulty(beatmap_id: int, max_pp: float, max_diff: float):
     with db_session:
         b = Beatmap.get(id=beatmap_id)
-        norm_diff = b.difficulty / scale
+        norm_diff = b.difficulty / max_diff
         if len(b.scores) == 0: return
         # print(f"Crunching {len(b.scores)} scores...")
         weighted_log_expected = 0.0
@@ -53,7 +53,7 @@ def update_beatmap_difficulty(beatmap_id: int, scale: float):
         weight_sum = 0.0
         for score in b.scores:
             if score.score == 0: continue
-            player_pp = score.user.normalized_pp
+            player_pp = score.user.total_pp / max_pp
             points_norm = score.score / 1_000_000.0
             player_weight = expit(player_pp)
             expected_score = expected_performance(player_pp, norm_diff)
@@ -69,19 +69,19 @@ def update_beatmap_difficulty(beatmap_id: int, scale: float):
 
         adjustment_log = avg_log_expected - avg_log_actual
         adjustment_ratio = exp(adjustment_log)
-        b.difficulty = norm_diff * adjustment_ratio * scale
+        b.difficulty = norm_diff * adjustment_ratio * max_diff
 
 
 # update_all_user_pp()
 
-def update_all_beatmaps_difficulty(max_diff:float, all_beatmap_ids=None):
+def update_all_beatmaps_difficulty(max_diff:float, max_pp:float, all_beatmap_ids=None):
     with db_session:
         if all_beatmap_ids is None:
             all_beatmap_ids = list(select(u.id for u in Beatmap)[:])
     random.shuffle(all_beatmap_ids)
     print(f"Computing {len(all_beatmap_ids)} beatmaps...")
     for id in tqdm(all_beatmap_ids):
-        update_beatmap_difficulty(id, scale=max_diff)
+        update_beatmap_difficulty(id, max_pp=max_pp, max_diff=max_diff)
 
 def compute_score_pp(score_id: int, max_pp: float, scale):
     with db_session:
@@ -116,6 +116,6 @@ while True:
         max_diff: float = max(select(b.difficulty for b in Beatmap).max(), 1e-8)
         max_pp: float = max(select(u.total_pp for u in User).max(), 1e-8)
         print("Max diff:", max_diff)
-    update_all_beatmaps_difficulty(max_diff, beatmap_ids)
+    update_all_beatmaps_difficulty(max_diff, max_pp, beatmap_ids)
     compute_all_score_pp(max_diff, max_pp, beatmap_ids, user_ids)
     update_all_user_pp()
