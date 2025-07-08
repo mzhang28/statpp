@@ -30,9 +30,9 @@ def import_beatmaps():
     print("Done.")
 
 # @task
-def fetch_old_scores(offset, limit):
+def fetch_old_scores(last_seen_id, limit):
     cur = conn.cursor()
-    cur.execute("select id, user_id, beatmap_id, total_score, data from scores limit %s offset %s", (limit, offset))
+    cur.execute("select id, user_id, beatmap_id, total_score, data from scores where id > %s order by id limit %s", (last_seen_id, limit))
     return cur.fetchall()
 
 # @task
@@ -60,10 +60,12 @@ def import_scores():
     total: int = cur.fetchone()[0]
     num_batches = ceil(total / BATCH_SIZE)
 
+    last_seen_id = 0
     for i in tqdm(range(num_batches)):
-        offset = i * BATCH_SIZE
-        rows = fetch_old_scores(offset, BATCH_SIZE)
+        rows = fetch_old_scores(last_seen_id, BATCH_SIZE)
         insert_new_scores(rows)
+        last_seen_id = rows[-1][0]
+        print(last_seen_id)
 
 # import_users()
 # import_beatmaps()
