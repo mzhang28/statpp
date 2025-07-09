@@ -1,50 +1,67 @@
 import json
-from pony.orm import db_session, select
-from db import Score, User, Beatmap, db
 import random
+from pony.orm import count, db_session, select
+from tqdm import tqdm
+from db import BeatmapMod, Score, User, Beatmap, db
+import click
 
 db.generate_mapping(create_tables=True)
 
-def sample_connected_subgraph(target_score_count=1000, initial_user_count=30):
+def sample_connected_subgraph(min_scores_per_user=20, min_scores_per_beatmapmod=20):
+    # Get beatmapmods with their score counts using aggregation
+    beatmapmod_data = select((bm, count(bm.scores)) for bm in BeatmapMod)[:]
+    eligible_beatmapmods = [(bm, cnt) for bm, cnt in beatmapmod_data
+                           if cnt >= min_scores_per_beatmapmod]
+    print(f"Step 1 Done: {len(eligible_beatmapmods)} eligible beatmapmods")
+
+    # Sort by score count descending
+    eligible_beatmapmods.sort(key=lambda x: x[1], reverse=True)
+
+    # Get users with their score counts using aggregation
+    user_data = select((u, count(u.scores)) for u in User)[:]
+    eligible_users = [u for u, cnt in user_data if cnt >= min_scores_per_user]
+    print(f"Step 2 Done: {len(eligible_users)} eligible users")
+
+    # Build connected subgraph
+    sampled_users = set()
+    sampled_beatmapmods_serial = set()
+    sampled_beatmapmods = set()
+
+    # Process beatmapmods in order of popularity
+    for beatmapmod, _ in tqdm(random.sample(eligible_beatmapmods, 2000)):
+        # Get all scores for this beatmapmod from eligible users in one query
+        scores_for_bm = Score.select(lambda s: s.beatmap_mod == beatmapmod
+                                     and s.user in eligible_users)[:]
+
+        if scores_for_bm:
+            # Add this beatmapmod and its beatmap
+            sampled_beatmapmods.add(beatmapmod)
+            sampled_beatmapmods_serial.add(beatmapmod.id)
+
+            # Add all users who have scores on this beatmapmod
+            for score in scores_for_bm:
+                sampled_users.add(score.user.id)
+
+    # Count total scores for sampled beatmapmods and users
+    num_scores = count(s for s in Score
+                      if s.beatmap_mod in sampled_beatmapmods
+                      and s.user.id in sampled_users)
+
+    sampled_users = list(sampled_users)
+    sampled_users.sort()
+    sampled_beatmapmods_serial = list(sampled_beatmapmods_serial)
+    sampled_users.sort()
+    return sampled_users, sampled_beatmapmods_serial, num_scores
+
+
+@click.command()
+@click.argument('filename',type=click.Path())
+def main(filename):
     with db_session:
-        # 1. Pick initial random users
-        initial_users = select(u for u in User).order_by(lambda: random.random())[:initial_user_count]
-        user_ids = set(u.id for u in initial_users)
+        users_sample, beatmapmods_sample, num_scores = sample_connected_subgraph()
+        with open(filename, "w") as f:
+            json.dump(dict(users=users_sample, beatmapmods=beatmapmods_sample), f)
+        print(f"Sampled {len(users_sample)} users, {len(beatmapmods_sample)} beatmapmods, {num_scores} scores")
 
-        beatmap_ids = set()
-        score_count = 0
-
-        prev_user_count = 0
-        prev_beatmap_count = 0
-
-        while score_count < target_score_count:
-            # 2. Find beatmaps played by current users
-            new_beatmaps = select(s.beatmap.id for s in Score if s.user.id in user_ids)
-            new_beatmap_ids = set(new_beatmaps) - beatmap_ids
-            if not new_beatmap_ids:
-                break
-            beatmap_ids.update(new_beatmap_ids)
-
-            # 3. Find all users who played those beatmaps
-            new_users = select(s.user.id for s in Score if s.beatmap.id in beatmap_ids)
-            new_user_ids = set(new_users) - user_ids
-            user_ids.update(new_user_ids)
-
-            # 4. Count total scores in this subgraph
-            score_count = select(s for s in Score if s.user.id in user_ids and s.beatmap.id in beatmap_ids).count()
-
-            # Stop if no growth or enough scores
-            if (len(user_ids) == prev_user_count and len(beatmap_ids) == prev_beatmap_count) or score_count >= target_score_count:
-                break
-
-            prev_user_count = len(user_ids)
-            prev_beatmap_count = len(beatmap_ids)
-
-        return list(user_ids), list(beatmap_ids), score_count
-
-# Usage example:
-with db_session:
-    users_sample, beatmaps_sample, num_scores = sample_connected_subgraph()
-    with open("sample.json", "w") as f:
-        json.dump(dict(users=users_sample, beatmaps=beatmaps_sample), f)
-    print(f"Sampled {len(users_sample)} users, {len(beatmaps_sample)} beatmaps, {num_scores} scores")
+if __name__ == "__main__":
+    main()

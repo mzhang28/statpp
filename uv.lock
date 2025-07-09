@@ -1708,6 +1708,7 @@ name = "statpp"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "click" },
     { name = "dotenv" },
     { name = "joblib" },
     { name = "mysql-connector-python" },
@@ -1728,6 +1729,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = ">=8.1.8" },
     { name = "dotenv", specifier = ">=0.9.9" },
     { name = "joblib", specifier = ">=1.5.1" },
     { name = "mysql-connector-python", specifier = ">=9.3.0" },
