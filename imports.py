@@ -80,6 +80,6 @@ def import_scores():
         last_seen_id = rows[-1][0]
         print(last_seen_id)
 
-# import_users()
-# import_beatmaps()
+import_users()
+import_beatmaps()
 import_scores()

@@ -27,7 +27,7 @@ def update_all_user_pp():
                     SELECT s.user, s.score_pp, ROW_NUMBER() OVER
                     (PARTITION BY s.user ORDER BY s.score_pp DESC) - 1 AS rn FROM Score s
                 )
-                SELECT SUM(POWER(0.94, rn) * score_pp)
+                SELECT SUM(POWER(0.9, rn) * score_pp)
                 FROM RankedScores rs
                 WHERE rs.user = u.id
             ), 0)
@@ -77,7 +77,7 @@ def update_beatmap_mod_difficulty(bmid: int, max_pp: float, max_diff: float):
 
         if bm.beatmap.id == 1173116: print(accum)
         adjustment_ratio = collect_beatmap_score_influences(accum, bm)
-        training_alpha = 0.002
+        training_alpha = 0.005
         bm.difficulty = (1 - training_alpha) * bm.difficulty + training_alpha * (norm_diff * adjustment_ratio * max_diff)
 
 

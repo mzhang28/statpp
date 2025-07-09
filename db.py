@@ -35,7 +35,7 @@ class BeatmapMod(db.Entity):
     mod = Required(str, index=True)
     difficulty = Required(float)
     scores = Set('Score')
-    success_rate = Required(float)
+    success_rate = Required(float, default=0.0)
     composite_key(beatmap, mod)
 
 class Score(db.Entity):
