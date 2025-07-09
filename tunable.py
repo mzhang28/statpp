@@ -45,9 +45,14 @@ def compute_beatmap_individual_score_influence(accum, bm, score):
     log_expected = log(max(expected, eps))
     log_actual = log(max(actual, eps))
 
-    accum['count'] += 1
-    accum['sum_log_expected'] += log_expected
-    accum['sum_log_actual'] += log_actual
+    player_weight = 1.0 / (1 + exp(-8.0 * (player_rating - 0.7)))
+    success_rate_alpha = 20.0
+    beatmap_weight = 1.0 / (1.0 + success_rate_alpha * bm.success_rate)
+    combined_weight = player_weight * beatmap_weight
+
+    accum['count'] += combined_weight
+    accum['sum_log_expected'] += combined_weight * log_expected
+    accum['sum_log_actual'] += combined_weight * log_actual
 
 def collect_beatmap_score_influences(accum, bm):
     """
@@ -61,8 +66,8 @@ def collect_beatmap_score_influences(accum, bm):
     avg_log_actual = accum['sum_log_actual'] / accum['count']
 
     # Compute adjustment log (clamped)
-    adjustment_log = avg_log_expected - avg_log_actual
-    adjustment_log = max(min(adjustment_log, 0.1), -0.1)
+    adjustment_log = avg_log_actual - avg_log_expected
+    adjustment_log = max(min(adjustment_log, 0.02), -0.2)
     adjustment_ratio = exp(adjustment_log)
 
     # Bonus multiplier for low success_rate maps
@@ -88,7 +93,7 @@ def score_to_pp(actual_score_norm, player_rating, beatmap_difficulty):
     base_pp = beatmap_difficulty * actual_score_norm
 
     # Difficulty gap adjustment
-    diff_gap = beatmap_difficulty - player_rating
+    diff_gap = player_rating - beatmap_difficulty
 
     if diff_gap > 0: # Map is harder than player → reward more
         multiplier = 1.0 + 2.0 * diff_gap
@@ -98,6 +103,6 @@ def score_to_pp(actual_score_norm, player_rating, beatmap_difficulty):
     pp = base_pp * multiplier
 
     # Clamp final pp to [0, beatmap_difficulty]
-    pp = max(0.0, min(pp, beatmap_difficulty))
+    pp = max(0.0, pp)
 
     return pp

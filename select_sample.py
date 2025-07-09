@@ -7,7 +7,7 @@ import click
 
 db.generate_mapping(create_tables=True)
 
-def sample_connected_subgraph(min_scores_per_user=20, min_scores_per_beatmapmod=20):
+def sample_connected_subgraph(min_scores_per_user=100, min_scores_per_beatmapmod=100):
     # Get beatmapmods with their score counts using aggregation
     beatmapmod_data = select((bm, count(bm.scores)) for bm in BeatmapMod)[:]
     eligible_beatmapmods = [(bm, cnt) for bm, cnt in beatmapmod_data
@@ -28,7 +28,7 @@ def sample_connected_subgraph(min_scores_per_user=20, min_scores_per_beatmapmod=
     sampled_beatmapmods = set()
 
     # Process beatmapmods in order of popularity
-    for beatmapmod, _ in tqdm(random.sample(eligible_beatmapmods, 5000)):
+    for beatmapmod, _ in tqdm(random.sample(eligible_beatmapmods, 100)):
         # Get all scores for this beatmapmod from eligible users in one query
         scores_for_bm = Score.select(lambda s: s.beatmap_mod == beatmapmod
                                      and s.user in eligible_users)[:]

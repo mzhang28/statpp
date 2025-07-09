@@ -1,16 +1,7 @@
 import mysql.connector
-from joblib import Memory
 from pony.orm import Database, Optional, PrimaryKey, Required, Set, composite_key
 
-memory = Memory(location="cache")
 conn = mysql.connector.connect(host="localhost", user="osu", password="osu", database="osu")
-
-@memory.cache
-def fetch_all_scores(limit=100000):
-    cur = conn.cursor()
-    cur.execute(f"select user_id, beatmap_id, accuracy, total_score, json_extract(data, '$.mods') from scores order by beatmap_id desc limit {limit}")
-    data = cur.fetchall()
-    return data
 
 db = Database()
 db.bind(provider='mysql', user='root', password='root',

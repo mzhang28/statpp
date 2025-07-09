@@ -7,10 +7,15 @@ select s.id, score, round(bm.success_rate, 4) as success, left(artist, 20) as ar
     where score_pp <> 0
     order by score_pp desc limit 30;
 
--- Top hardest maps
+-- Maps by difficulty
 select round(difficulty, 6) as difficulty, round(bm.success_rate, 4) as success, `mod`, b.id, left(artist, 20) as artist, left(title, 20) as title, left(diffname, 20) as diffname from beatmap as b join beatmapmod as bm on b.id = bm.beatmap
     where difficulty <> 5
     order by difficulty desc limit 30;
+
+-- Maps by success rate
+select round(difficulty, 6) as difficulty, round(bm.success_rate, 4) as success, `mod`, b.id, left(artist, 20) as artist, left(title, 20) as title, left(diffname, 20) as diffname from beatmap as b join beatmapmod as bm on b.id = bm.beatmap
+    where difficulty <> 5
+    order by success_rate asc limit 30;
 
 -- Top top players
 select id, username, round(total_pp, 2) as pp from user
@@ -18,6 +23,7 @@ select id, username, round(total_pp, 2) as pp from user
     order by total_pp desc limit 30;
 
 -- Reset
-update beatmapmod set difficulty = 5, success_rate = 0.0;
-update score set score_pp = 0;
-update user set total_pp = 0;
+update beatmapmod set difficulty = 5 where difficulty <> 5;
+update beatmapmod set success_rate = 0 where success_rate <> 0;
+update score set score_pp = 0 where score_pp <> 0;
+update user set total_pp = 0 where total_pp <> 0;

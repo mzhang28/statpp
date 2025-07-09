@@ -1,5 +1,5 @@
 from pony.orm import db_session, desc, select
-from math import exp, log, tanh
+from math import exp, log, tanh, sqrt
 from prefect import task
 from tqdm import tqdm
 from db import Beatmap, BeatmapMod, Score, User, conn, db
@@ -11,34 +11,42 @@ from tunable import collect_beatmap_score_influences, compute_beatmap_individual
 db.generate_mapping(create_tables=False, check_tables=True)
 
 # SAMPLE RELATED
-with open("sample2.json") as f:
+with open("sample3.json") as f:
     sample = json.load(f)
 user_ids = sample["users"]
 beatmapmod_ids = sample["beatmapmods"]
-
 
 def update_all_user_pp():
     with db_session:
         print(f"Updating user pp for {len(user_ids)} users...")
         db.execute(f"""
             UPDATE User u
-            SET total_pp = COALESCE((
-                WITH RankedScores AS (
-                    SELECT s.user, s.score_pp, ROW_NUMBER() OVER
-                    (PARTITION BY s.user ORDER BY s.score_pp DESC) - 1 AS rn FROM Score s
-                )
-                SELECT SUM(POWER(0.9, rn) * score_pp)
-                FROM RankedScores rs
-                WHERE rs.user = u.id
-            ), 0)
-            WHERE u.id IN ({", ".join(str(u) for u in user_ids)})
+            JOIN (
+                SELECT
+                    rs.user_id,
+                    SUM(POWER(0.9, rs.rn) * rs.score_pp) AS total_pp
+                FROM (
+                    SELECT
+                        s.user AS user_id,
+                        s.score_pp,
+                        @rownum := IF(@prev_user = s.user, @rownum + 1, 0) AS rn,
+                        @prev_user := s.user
+                    FROM (
+                        SELECT *
+                        FROM Score s
+                        WHERE s.user IN ({", ".join(str(u) for u in user_ids)})
+                        ORDER BY s.user, s.score_pp DESC
+                    ) s
+                    CROSS JOIN (SELECT @rownum := -1, @prev_user := NULL) vars
+                ) rs
+                GROUP BY rs.user_id
+            ) us ON us.user_id = u.id
+            SET u.total_pp = COALESCE(us.total_pp, 0)
         """)
 
 def update_beatmap_mod_difficulty(bmid: int, max_pp: float, max_diff: float):
     with db_session:
         bm = BeatmapMod.get(id=bmid)
-        success_rate_alpha = 20.0
-        beatmap_weight = 1.0 / (1.0 + success_rate_alpha * bm.success_rate)
         norm_diff = bm.difficulty / max_diff
         if len(bm.scores) == 0: return
         # print(f"Crunching {len(b.scores)} scores...")
@@ -77,11 +85,8 @@ def update_beatmap_mod_difficulty(bmid: int, max_pp: float, max_diff: float):
 
         if bm.beatmap.id == 1173116: print(accum)
         adjustment_ratio = collect_beatmap_score_influences(accum, bm)
-        training_alpha = 0.005
+        training_alpha = 0.05
         bm.difficulty = (1 - training_alpha) * bm.difficulty + training_alpha * (norm_diff * adjustment_ratio * max_diff)
-
-
-# update_all_user_pp()
 
 def update_all_beatmaps_difficulty(max_diff:float, max_pp:float, all_beatmap_ids=None):
     with db_session:
@@ -95,11 +100,12 @@ def update_all_beatmaps_difficulty(max_diff:float, max_pp:float, all_beatmap_ids
 def normalize_score(score_i: int, mods: str) -> float:
     score = score_i * 1.0
     mods_l = mods.split("|")
-    for mod in mods:
+    for mod in mods_l:
         if mod == "CL": score /= 0.96
         if mod == "DT": score /= 1.2
         if mod == "HR": score /= 1.1
         if mod == "HD": score /= 1.1
+        if mod == "EZ": score /= 0.5
     return score / 1_000_000.0
 
 def compute_score_pp(score_id: int, max_pp: float, scale):
@@ -108,9 +114,8 @@ def compute_score_pp(score_id: int, max_pp: float, scale):
         points_norm = normalize_score(s.score, s.beatmap_mod.mod)
         norm_diff = s.beatmap_mod.difficulty / scale
         norm_pp = s.user.total_pp / max_pp
-        score_pp = s.beatmap_mod.difficulty * score_to_pp(points_norm, norm_pp, norm_diff)
+        score_pp = score_to_pp(points_norm, norm_pp, norm_diff)
         s.score_pp = score_pp
-
 
 def compute_all_score_pp(max_diff: float, max_pp: float, all_beatmap_ids=None, all_player_ids=None):
     with db_session:
@@ -130,34 +135,46 @@ def compute_all_score_pp(max_diff: float, max_pp: float, all_beatmap_ids=None, a
     for id in tqdm(all_score_ids):
         compute_score_pp(id, max_pp=max_pp, scale=max_diff)
 
-def compute_all_beatmap_success_rate():
+def compute_all_beatmap_success_rate(beatmapmod_ids=None):
     with db_session:
-        target = 20
-        db.execute("""
-            UPDATE BeatmapMod bm
-            JOIN (
-                SELECT
-                    s.beatmap_mod AS bm_id,
-                    COUNT(*) AS n_scores,
-                    SUM(1.0 / (1.0 + EXP(-20 * (LEAST(GREATEST(s.score/1000000.0, 0), 1) - 0.8)))) AS pass_sum
-                FROM Score s
-                GROUP BY s.beatmap_mod
-            ) AS derived ON bm.id = derived.bm_id
-            SET bm.success_rate = CASE
-                WHEN derived.n_scores = 0 THEN 0
-                ELSE SQRT(LEAST(1, (derived.pass_sum / derived.n_scores) / 0.7))  -- 0.7 = X here
-            END;
-                """)
+        if beatmapmod_ids is None:
+            beatmapmod_ids = list(select(bm.id for bm in BeatmapMod)[:])
+
+        beatmap_success_data = {}
+        scores_to_process = select(s for s in Score if s.beatmap_mod.id in beatmapmod_ids)[:]
+
+        print(f"Computing success rates for {len(beatmapmod_ids)} beatmap mods based on {len(scores_to_process)} scores...")
+
+        for s in tqdm(scores_to_process, desc="Calculating score contributions to success rate"):
+            bm_id = s.beatmap_mod.id
+            if bm_id not in beatmap_success_data:
+                beatmap_success_data[bm_id] = {'n_scores': 0, 'pass_sum': 0.0}
+
+            points_norm = normalize_score(s.score, s.beatmap_mod.mod)
+            points_norm = max(min(points_norm, 1.0), 0.0)
+            pass_contribution = 1.0 / (1.0 + exp(-20 * (points_norm - 0.8)))
+
+            beatmap_success_data[bm_id]['n_scores'] += 1
+            beatmap_success_data[bm_id]['pass_sum'] += pass_contribution
+
+        print("Updating beatmap mod success rates in database...")
+        for bm_id, data in tqdm(beatmap_success_data.items(), desc="Updating database"):
+            bm = BeatmapMod.get(id=bm_id)
+            if bm:
+                n_scores = data['n_scores']
+                pass_sum = data['pass_sum']
+
+                if n_scores == 0:
+                    bm.success_rate = 0.0
+                else:
+                    success_rate_raw = (pass_sum / n_scores) / 0.7
+                    bm.success_rate = sqrt(min(1.0, success_rate_raw))
 
 max_diff = 8
 max_pp = 300
 while True:
     print("New loop ------------------------")
-    # with db_session:
-        # max_diff: float = max(select(bm.difficulty for bm in BeatmapMod).max(), 1e-8)
-        # max_pp: float = max(select(u.total_pp for u in User).max(), 1e-8)
-        # print("Max diff:", max_diff)
-    compute_all_beatmap_success_rate()
+    compute_all_beatmap_success_rate(beatmapmod_ids=beatmapmod_ids)
     update_all_beatmaps_difficulty(max_diff, max_pp, beatmapmod_ids)
     compute_all_score_pp(max_diff, max_pp, beatmapmod_ids, user_ids)
     update_all_user_pp()
