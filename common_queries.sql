@@ -17,10 +17,13 @@ select round(difficulty, 6) as difficulty, round(bm.success_rate, 4) as success,
     where difficulty <> 5
     order by success_rate asc limit 30;
 
--- Top top players
+-- Top players
 select id, username, round(total_pp, 2) as pp from user
     where total_pp <> 0
     order by total_pp desc limit 30;
+
+-- Top players including # scores
+select u.id, u.username, round(u.total_pp, 2) as pp, count(*) as score_ct from score as s join user as u on s.user = u.id where s.score_pp > 0 group by s.user order by score_ct desc limit 30;
 
 -- Reset
 update beatmapmod set difficulty = 5 where difficulty <> 5;

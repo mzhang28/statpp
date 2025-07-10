@@ -28,7 +28,7 @@ def sample_connected_subgraph(min_scores_per_user=100, min_scores_per_beatmapmod
     sampled_beatmapmods = set()
 
     # Process beatmapmods in order of popularity
-    for beatmapmod, _ in tqdm(random.sample(eligible_beatmapmods, 100)):
+    for beatmapmod, _ in tqdm(random.sample(eligible_beatmapmods, 10000)):
         # Get all scores for this beatmapmod from eligible users in one query
         scores_for_bm = Score.select(lambda s: s.beatmap_mod == beatmapmod
                                      and s.user in eligible_users)[:]

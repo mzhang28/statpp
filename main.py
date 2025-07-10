@@ -11,7 +11,7 @@ from tunable import collect_beatmap_score_influences, compute_beatmap_individual
 db.generate_mapping(create_tables=False, check_tables=True)
 
 # SAMPLE RELATED
-with open("sample3.json") as f:
+with open("sample4.json") as f:
     sample = json.load(f)
 user_ids = sample["users"]
 beatmapmod_ids = sample["beatmapmods"]
@@ -24,7 +24,7 @@ def update_all_user_pp():
             JOIN (
                 SELECT
                     rs.user_id,
-                    SUM(POWER(0.9, rs.rn) * rs.score_pp) AS total_pp
+                    SUM(POWER(0.8, rs.rn) * rs.score_pp) AS total_pp
                 FROM (
                     SELECT
                         s.user AS user_id,
