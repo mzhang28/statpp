@@ -1,44 +1,45 @@
 use anyhow::Result;
+use futures::{StreamExt, stream};
 use indicatif::{ProgressBar, ProgressStyle};
-use sea_orm::{ConnectionTrait, Database, Statement, FromQueryResult};
+use sqlx::{MySql, Pool, Row, mysql::MySqlPoolOptions};
+use std::collections::HashMap;
 use std::env;
+use std::sync::Arc;
 
-#[derive(Debug, FromQueryResult)]
-struct MinMax {
-    min_id: Option<i32>,
-    max_id: Option<i32>,
-}
+const CONCURRENT_BATCHES: usize = 50;
+const USER_BATCH_SIZE: u32 = 100;
 
 pub async fn run() -> Result<()> {
     dotenvy::dotenv().ok();
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let db = Database::connect(&database_url).await?;
 
+    let pool = MySqlPoolOptions::new()
+        .max_connections(100) // Ensure we have enough connections for concurrency
+        .connect(&database_url)
+        .await?;
+
+    let pool = Arc::new(pool);
     println!("Connected to database.");
 
     // 1. Get User ID Range
     println!("Fetching user ID range...");
-    let result = MinMax::find_by_statement(Statement::from_string(
-        db.get_database_backend(),
-        "SELECT MIN(id) as min_id, MAX(id) as max_id FROM user".to_string(),
-    ))
-    .one(&db)
-    .await?
-    .ok_or_else(|| anyhow::anyhow!("No users found"))?;
+    let (min_id, max_id): (i32, i32) = sqlx::query_as("SELECT MIN(id), MAX(id) FROM statpp.user")
+        .fetch_one(&*pool)
+        .await
+        .unwrap_or((0, 0)); // Handle case with no users gracefully if needed
 
-    let min_id = result.min_id.unwrap_or(0);
-    let max_id = result.max_id.unwrap_or(0);
-    let total_range = max_id - min_id + 1;
-
-    if total_range <= 0 {
-        println!("No users to process.");
+    if max_id == 0 {
+        println!("No users found.");
         return Ok(());
     }
 
-    println!("Processing users with IDs {} to {}...", min_id, max_id);
+    let total_users = (max_id - min_id + 1) as u64;
+    println!(
+        "Processing users with IDs {} to {} (approx {} users)...",
+        min_id, max_id, total_users
+    );
 
-    // 2. Process in Batches
-    let pb = ProgressBar::new(total_range as u64);
+    let pb = ProgressBar::new(total_users);
     pb.set_style(
         ProgressStyle::default_bar()
             .template("{msg} {bar:40} {pos}/{len} {eta}")
@@ -46,45 +47,125 @@ pub async fn run() -> Result<()> {
     );
     pb.set_message("Calculating Skills");
 
-    const BATCH_SIZE: i32 = 10000;
-    let mut current_min = min_id;
-
-    while current_min <= max_id {
-        let current_max = std::cmp::min(current_min + BATCH_SIZE - 1, max_id);
-        
-        // We use a raw SQL query to perform the calculation entirely in the database.
-        // This avoids fetching millions of scores into the application memory.
-        // We calculate the weighted PP: sum(score_pp * 0.95^rank)
-        let sql = format!(
-            r#"
-            UPDATE user u
-            JOIN (
-                SELECT 
-                    osu_user, 
-                    SUM(score_pp * POW(0.95, rn)) as total_pp
-                FROM (
-                    SELECT 
-                        osu_user, 
-                        score_pp, 
-                        ROW_NUMBER() OVER (PARTITION BY osu_user ORDER BY score_pp DESC) - 1 as rn
-                    FROM score
-                    WHERE osu_user BETWEEN {} AND {}
-                ) ranked
-                GROUP BY osu_user
-            ) stats ON u.id = stats.osu_user
-            SET u.total_pp = stats.total_pp;
-            "#,
-            current_min, current_max
-        );
-
-        db.execute_unprepared(&sql).await?;
-        
-        pb.inc((current_max - current_min + 1) as u64);
-        current_min += BATCH_SIZE;
+    // Create ranges
+    let mut ranges = Vec::new();
+    let mut current = min_id;
+    while current <= max_id {
+        let end = std::cmp::min(current + USER_BATCH_SIZE as i32 - 1, max_id);
+        ranges.push((current, end));
+        current += USER_BATCH_SIZE as i32;
     }
 
-    pb.finish();
+    let pb_shared = Arc::new(pb);
+
+    // 2. Process concurrently
+    stream::iter(ranges)
+        .map(|(start, end)| {
+            let pool = pool.clone();
+            let pb = pb_shared.clone();
+            async move {
+                process_batch(&pool, start, end, pb).await?;
+                // pb.inc((end - start + 1) as u64);
+                Ok::<(), anyhow::Error>(())
+            }
+        })
+        .buffer_unordered(CONCURRENT_BATCHES)
+        .collect::<Vec<_>>()
+        .await;
+
+    pb_shared.finish();
     println!("Skill calculation complete.");
+
+    Ok(())
+}
+
+async fn process_batch(
+    pool: &Pool<MySql>,
+    start_id: i32,
+    end_id: i32,
+    pb_shared: Arc<ProgressBar>,
+) -> Result<()> {
+    // 1. Fetch scores for this range of users
+    // We select `osu_user` (which corresponds to user.id) and `score_pp`
+    let rows = sqlx::query!(
+        "SELECT osu_user, score_pp FROM statpp.score WHERE osu_user BETWEEN ? AND ?",
+        start_id,
+        end_id
+    )
+    .fetch_all(pool)
+    .await?;
+
+    pb_shared.println(format!("Fetched all rows ({})", rows.len()));
+
+    if rows.is_empty() {
+        return Ok(());
+    }
+
+    // 2. Group by user
+    let mut user_scores: HashMap<i32, Vec<f64>> = HashMap::new();
+    for row in rows {
+        user_scores
+            .entry(row.osu_user)
+            .or_default()
+            .push(row.score_pp);
+    }
+
+    // 3. Calculate weighted PP
+    let mut updates = Vec::with_capacity(user_scores.len());
+    for (user_id, mut pps) in user_scores {
+        // Sort descending
+        pps.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Weighted sum: pp * 0.95^index
+        let total_pp: f64 = pps
+            .iter()
+            .enumerate()
+            .map(|(i, pp)| pp * 0.95f64.powi(i as i32))
+            .sum();
+
+        updates.push((user_id, total_pp));
+        pb_shared.inc(1);
+    }
+
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    // 4. Bulk Update
+    // UPDATE user SET total_pp = CASE id WHEN ? THEN ? ... END WHERE id IN (...)
+    let mut query = String::from("UPDATE statpp.user SET total_pp = CASE id ");
+    let mut params = Vec::new();
+    let mut ids = Vec::new();
+
+    for (uid, pp) in &updates {
+        query.push_str("WHEN ? THEN ? ");
+        params.push(*uid);
+        // We push the float as strict value, or bind it.
+        // Since we are building the query string for the CASE, we use bind placeholders.
+    }
+
+    query.push_str("END WHERE id IN (");
+    for (i, (uid, _)) in updates.iter().enumerate() {
+        if i > 0 {
+            query.push_str(", ");
+        }
+        query.push('?');
+        ids.push(*uid);
+    }
+    query.push(')');
+
+    let mut qb = sqlx::query(&query);
+
+    // Bind CASE WHEN parameters
+    for (uid, pp) in &updates {
+        qb = qb.bind(uid).bind(pp);
+    }
+    // Bind WHERE IN parameters
+    for uid in ids {
+        qb = qb.bind(uid);
+    }
+
+    qb.execute(pool).await?;
 
     Ok(())
 }
