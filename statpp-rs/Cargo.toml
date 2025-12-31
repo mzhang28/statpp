@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
-burn = { version = "0.19.1", features = ["wgpu"] }
+burn = { version = "0.19.1", features = ["wgpu", "train"] }
 clap = { version = "4.5.53", features = ["derive"] }
 dotenvy = "0.15.7"
 indicatif = "0.18.3"
