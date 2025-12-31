@@ -463,53 +463,6 @@ CREATE TABLE `scores` (
  PARTITION `p0catch` VALUES LESS THAN (0,MAXVALUE) ENGINE = InnoDB,
  PARTITION `p1` VALUES LESS THAN (MAXVALUE,MAXVALUE) ENGINE = InnoDB);
 /*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `statpp_beatmap`
---
-
-DROP TABLE IF EXISTS `statpp_beatmap`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `statpp_beatmap` (
-  `beatmap_id` mediumint(8) unsigned NOT NULL,
-  `beatmapset_id` mediumint(8) unsigned DEFAULT NULL,
-  `difficulty_name` varchar(80) DEFAULT NULL,
-  PRIMARY KEY (`beatmap_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `statpp_beatmapset`
---
-
-DROP TABLE IF EXISTS `statpp_beatmapset`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `statpp_beatmapset` (
-  `beatmapset_id` mediumint(8) unsigned NOT NULL,
-  `artist` varchar(80) DEFAULT NULL,
-  `title` varchar(80) DEFAULT NULL,
-  PRIMARY KEY (`beatmapset_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
-
---
--- Table structure for table `statpp_scores`
---
-
-DROP TABLE IF EXISTS `statpp_scores`;
-/*!40101 SET @saved_cs_client     = @@character_set_client */;
-/*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `statpp_scores` (
-  `score_id` bigint(20) unsigned NOT NULL,
-  `beatmap_id` mediumint(9) DEFAULT NULL,
-  `player_id` int(10) unsigned DEFAULT NULL,
-  `score` int(11) DEFAULT NULL,
-  `mods` varchar(255) DEFAULT NULL,
-  PRIMARY KEY (`score_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
-/*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
 /*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
@@ -520,4 +473,4 @@ CREATE TABLE `statpp_scores` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2025-12-29 13:49:54
+-- Dump completed on 2025-12-30 21:52:35

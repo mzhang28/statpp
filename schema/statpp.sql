@@ -49,7 +49,7 @@ CREATE TABLE `beatmapmod` (
   UNIQUE KEY `unq_beatmapmod__beatmap_mod` (`beatmap`,`mod`),
   KEY `idx_beatmapmod__mod` (`mod`),
   CONSTRAINT `fk_beatmapmod__beatmap` FOREIGN KEY (`beatmap`) REFERENCES `beatmap` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=2053690 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -60,17 +60,18 @@ DROP TABLE IF EXISTS `score`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
 CREATE TABLE `score` (
-  `id` int(11) NOT NULL,
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `osu_score_id` bigint(20) NOT NULL,
   `osu_user` int(11) NOT NULL,
   `beatmap_mod` int(11) NOT NULL,
   `score` int(11) NOT NULL,
   `score_pp` double NOT NULL,
   PRIMARY KEY (`id`),
+  UNIQUE KEY `osu_score_id` (`osu_score_id`),
   KEY `idx_score__beatmap_mod` (`beatmap_mod`),
   KEY `idx_score__score_pp` (`score_pp`),
-  KEY `idx_score__user` (`osu_user`),
-  CONSTRAINT `fk_score__beatmap_mod` FOREIGN KEY (`beatmap_mod`) REFERENCES `beatmapmod` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+  KEY `idx_score__user` (`osu_user`)
+) ENGINE=InnoDB AUTO_INCREMENT=54126273 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -87,7 +88,7 @@ CREATE TABLE `user` (
   `total_pp` double NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `osu_id` (`osu_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=94994 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -99,4 +100,4 @@ CREATE TABLE `user` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2025-12-29 13:49:54
+-- Dump completed on 2025-12-30 21:52:35

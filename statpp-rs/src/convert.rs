@@ -17,21 +17,6 @@ struct ScoreMetadata {
     mods: Vec<ModItem>,
 }
 
-// --- Database Models ---
-#[derive(Debug, sqlx::FromRow)]
-struct SourceBeatmap {
-    beatmap_id: u32,
-    artist: String,
-    title: String,
-    version: String,
-}
-
-#[derive(Debug, sqlx::FromRow)]
-struct SourceUser {
-    user_id: u32,
-    // username: String,
-}
-
 #[derive(Debug, sqlx::FromRow)]
 struct SourceScore {
     id: u64,
@@ -77,7 +62,7 @@ async fn migrate_users(pool: &Pool<MySql>) -> Result<HashMap<u32, i32>, sqlx::Er
     // Note: The provided first schema does NOT have a table with 'username'.
     // The Python code references 'sample_users'. We use that here.
     // If that table doesn't exist, this query needs to be adjusted to your actual user source.
-    let rows = sqlx::query_as::<_, SourceUser>("SELECT user_id FROM osu_user_stats")
+    let rows = sqlx::query!("SELECT user_id FROM osu.osu_user_stats")
         .fetch_all(pool)
         .await?;
 
@@ -136,15 +121,15 @@ async fn migrate_users(pool: &Pool<MySql>) -> Result<HashMap<u32, i32>, sqlx::Er
 async fn migrate_beatmaps(pool: &Pool<MySql>) -> Result<(), sqlx::Error> {
     println!("Migrating beatmaps...");
 
-    let query = r#"
-        SELECT b.beatmap_id, s.artist, s.title, b.version
+    let rows = sqlx::query!(
+        r#"
+        SELECT CAST (b.beatmap_id AS unsigned) AS beatmap_id, s.artist, s.title, b.version
         FROM osu.osu_beatmaps b
         JOIN osu.osu_beatmapsets s ON b.beatmapset_id = s.beatmapset_id
-    "#;
-
-    let rows = sqlx::query_as::<_, SourceBeatmap>(query)
-        .fetch_all(pool)
-        .await?;
+        "#
+    )
+    .fetch_all(pool)
+    .await?;
 
     let pb = ProgressBar::new(rows.len() as u64);
     pb.set_style(
@@ -179,10 +164,7 @@ async fn migrate_beatmaps(pool: &Pool<MySql>) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-async fn migrate_scores(
-    pool: &Pool<MySql>,
-    user_map: &HashMap<u32, i32>,
-) -> Result<(), sqlx::Error> {
+async fn migrate_scores(pool: &Pool<MySql>, user_map: &HashMap<u32, i32>) -> Result<()> {
     println!("Migrating scores...");
 
     // Cache for (beatmap_id, mod_string) -> beatmapmod.id
@@ -216,11 +198,7 @@ async fn migrate_scores(
 
     loop {
         // 1. Fetch Batch
-        let scores = sqlx::query_as::<_, SourceScore>(
-            "SELECT id, user_id, beatmap_id, total_score, data FROM osu.scores WHERE id > ? ORDER BY id LIMIT ?"
-        )
-        .bind(last_seen_id)
-        .bind(BATCH_SIZE)
+        let scores = sqlx::query!("SELECT id, user_id, CAST (beatmap_id AS unsigned) AS beatmap_id, total_score, data FROM osu.scores WHERE id > ? ORDER BY id LIMIT ?", last_seen_id, BATCH_SIZE)
         .fetch_all(pool)
         .await?;
 
