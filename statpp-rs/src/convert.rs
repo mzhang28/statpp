@@ -1,7 +1,7 @@
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
-use sqlx::{MySql, Pool, Row, mysql::MySqlPoolOptions};
+use sqlx::{mysql::MySqlPoolOptions, MySql, Pool, Row};
 use std::collections::{HashMap, HashSet};
 use std::env;
 
@@ -26,6 +26,12 @@ struct SourceScore {
     data: Vec<u8>, // JSON
 }
 
+struct IndexDef {
+    name: String,
+    columns: Vec<String>,
+    unique: bool,
+}
+
 const BATCH_SIZE: i64 = 10_000;
 
 pub async fn run() -> Result<()> {
@@ -43,6 +49,12 @@ pub async fn run() -> Result<()> {
 
     println!("Connected to database.");
 
+    // 0. Truncate Tables
+    truncate_tables(&pool).await?;
+
+    // Disable keys for performance
+    toggle_keys(&pool, false).await?;
+
     // 1. Migrate Users
     // Returns a map of osu_user_id -> target_table_id
     let user_map = migrate_users(&pool).await?;
@@ -51,8 +63,134 @@ pub async fn run() -> Result<()> {
     migrate_beatmaps(&pool).await?;
 
     // 3. Migrate Scores
+    // Remove indexes for performance
+    let indexes = drop_indexes(&pool).await?;
     migrate_scores(&pool, &user_map).await?;
+    // Restore indexes
+    restore_indexes(&pool, indexes).await?;
 
+    // Enable keys back
+    toggle_keys(&pool, true).await?;
+
+    Ok(())
+}
+
+async fn truncate_tables(pool: &Pool<MySql>) -> Result<()> {
+    println!("Truncating tables...");
+    // Acquire a single connection to ensure SET FOREIGN_KEY_CHECKS applies to the TRUNCATEs
+    let mut conn = pool.acquire().await?;
+
+    sqlx::query("SET FOREIGN_KEY_CHECKS = 0")
+        .execute(&mut *conn)
+        .await?;
+
+    sqlx::query("TRUNCATE TABLE statpp.score")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("TRUNCATE TABLE statpp.beatmapmod")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("TRUNCATE TABLE statpp.beatmap")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("TRUNCATE TABLE statpp.user")
+        .execute(&mut *conn)
+        .await?;
+
+    sqlx::query("SET FOREIGN_KEY_CHECKS = 1")
+        .execute(&mut *conn)
+        .await?;
+
+    println!("Tables truncated.");
+    Ok(())
+}
+
+async fn toggle_keys(pool: &Pool<MySql>, enable: bool) -> Result<()> {
+    let state = if enable { "ENABLE" } else { "DISABLE" };
+    println!("{} keys for all tables...", state);
+
+    let tables = [
+        "statpp.user",
+        "statpp.beatmap",
+        "statpp.beatmapmod",
+        "statpp.score",
+    ];
+
+    for table in tables {
+        let query = format!("ALTER TABLE {} {} KEYS", table, state);
+        sqlx::query(&query).execute(pool).await?;
+    }
+
+    Ok(())
+}
+
+async fn drop_indexes(pool: &Pool<MySql>) -> Result<Vec<IndexDef>> {
+    println!("Fetching and dropping indexes on statpp.score...");
+
+    // Fetch index definitions
+    let rows = sqlx::query(
+        r#"
+        SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE, SEQ_IN_INDEX
+        FROM INFORMATION_SCHEMA.STATISTICS
+        WHERE TABLE_SCHEMA = 'statpp' AND TABLE_NAME = 'score'
+        ORDER BY INDEX_NAME, SEQ_IN_INDEX
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut indices: HashMap<String, IndexDef> = HashMap::new();
+
+    for row in rows {
+        let name: String = row.get("INDEX_NAME");
+        // Don't drop Primary Key
+        if name == "PRIMARY" {
+            continue;
+        }
+
+        let column: String = row.get("COLUMN_NAME");
+        let non_unique: i64 = row.get("NON_UNIQUE");
+
+        let entry = indices.entry(name.clone()).or_insert(IndexDef {
+            name,
+            columns: Vec::new(),
+            unique: non_unique == 0,
+        });
+        entry.columns.push(column);
+    }
+
+    let mut result: Vec<IndexDef> = indices.into_values().collect();
+    // Sort for deterministic output
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Drop them
+    for idx in &result {
+        let query = format!("DROP INDEX `{}` ON statpp.score", idx.name);
+        sqlx::query(&query).execute(pool).await?;
+        println!("Dropped index: {}", idx.name);
+    }
+
+    Ok(result)
+}
+
+async fn restore_indexes(pool: &Pool<MySql>, indices: Vec<IndexDef>) -> Result<()> {
+    println!("Restoring indexes on statpp.score...");
+    for idx in indices {
+        let cols = idx
+            .columns
+            .iter()
+            .map(|c| format!("`{}`", c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let unique_str = if idx.unique { "UNIQUE" } else { "" };
+        let query = format!(
+            "CREATE {} INDEX `{}` ON statpp.score ({})",
+            unique_str, idx.name, cols
+        );
+
+        println!("Restoring index: {} on ({})", idx.name, cols);
+        sqlx::query(&query).execute(pool).await?;
+    }
     Ok(())
 }
 
@@ -66,43 +204,49 @@ async fn migrate_users(pool: &Pool<MySql>) -> Result<HashMap<u32, i32>, sqlx::Er
         .fetch_all(pool)
         .await?;
 
-    if rows.is_empty() {
-        println!("No users found in sample_users.");
-        return Ok(HashMap::new());
+    if !rows.is_empty() {
+        let pb = ProgressBar::new(rows.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{msg} {bar:40} {pos}/{len}")
+                .unwrap(),
+        );
+        pb.set_message("Users (Initial)");
+
+        // We insert in chunks to prevent packet size errors
+        for chunk in rows.chunks(5000) {
+            let mut query_builder =
+                sqlx::QueryBuilder::new("INSERT INTO statpp.user (osu_id, username, total_pp) ");
+
+            query_builder.push_values(chunk, |mut b, user| {
+                b.push_bind(user.user_id)
+                    .push_bind("<unknown>") // or user.username if available
+                    .push_bind(0.0);
+            });
+
+            query_builder.push(" ON DUPLICATE KEY UPDATE username = VALUES(username)");
+
+            query_builder.build().execute(pool).await?;
+            pb.inc(chunk.len() as u64);
+        }
+        pb.finish();
+    } else {
+        println!("No users found in sample_users. Proceeding to score-based user discovery.");
     }
 
-    let pb = ProgressBar::new(rows.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{msg} {bar:40} {pos}/{len}")
-            .unwrap(),
-    );
-    pb.set_message("Users");
-
-    // let mut query_builder =
-    //     sqlx::QueryBuilder::new("INSERT INTO statpp.user (osu_id, username, total_pp) ");
-
-    // We insert in chunks to prevent packet size errors
-    for chunk in rows.chunks(5000) {
-        let mut query_builder =
-            sqlx::QueryBuilder::new("INSERT INTO statpp.user (osu_id, username, total_pp) ");
-
-        query_builder.push_values(chunk, |mut b, user| {
-            b.push_bind(user.user_id)
-                .push_bind("<unknown>") // or user.username if available
-                .push_bind(0.0);
-        });
-
-        query_builder.push(" ON DUPLICATE KEY UPDATE username = VALUES(username)");
-
-        query_builder.build().execute(pool).await?;
-        pb.inc(chunk.len() as u64);
-    }
-
-    // Flush remaining
-    // query_builder.push(" ON DUPLICATE KEY UPDATE username = VALUES(username)");
-    // query_builder.build().execute(pool).await?;
-    pb.finish();
+    // Ensure all users referenced in scores exist
+    println!("Ensuring all users from scores exist...");
+    // Insert any users found in scores but missing from user table
+    // statpp.user needs (osu_id, username, total_pp)
+    sqlx::query(
+        r#"
+        INSERT IGNORE INTO statpp.user (osu_id, username, total_pp)
+        SELECT DISTINCT user_id, '<unknown>', 0.0
+        FROM osu.scores
+        "#,
+    )
+    .execute(pool)
+    .await?;
 
     // Build the ID map for Foreign Key lookups later
     println!("Building user ID map...");
