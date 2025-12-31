@@ -1,7 +1,7 @@
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
-use sqlx::{mysql::MySqlPoolOptions, MySql, Pool, Row};
+use sqlx::{MySql, Pool, Row, mysql::MySqlPoolOptions};
 use std::collections::{HashMap, HashSet};
 use std::env;
 
@@ -342,7 +342,7 @@ async fn migrate_scores(pool: &Pool<MySql>, user_map: &HashMap<u32, i32>) -> Res
 
     loop {
         // 1. Fetch Batch
-        let scores = sqlx::query!("SELECT id, user_id, CAST (beatmap_id AS unsigned) AS beatmap_id, total_score, data FROM osu.scores WHERE id > ? ORDER BY id LIMIT ?", last_seen_id, BATCH_SIZE)
+        let scores = sqlx::query!("SELECT id, user_id, CAST (beatmap_id AS unsigned) AS beatmap_id, total_score, pp, data FROM osu.scores WHERE id > ? ORDER BY id LIMIT ?", last_seen_id, BATCH_SIZE)
         .fetch_all(pool)
         .await?;
 
@@ -435,19 +435,27 @@ async fn migrate_scores(pool: &Pool<MySql>, user_map: &HashMap<u32, i32>) -> Res
                 None => continue, // Should not happen
             };
 
-            scores_to_insert.push((score.id, target_user_id, beatmap_mod_id, score.total_score));
+            let pp_val = score.pp.unwrap_or(0.0);
+
+            scores_to_insert.push((
+                score.id,
+                target_user_id,
+                beatmap_mod_id,
+                score.total_score,
+                pp_val,
+            ));
         }
 
         if !scores_to_insert.is_empty() {
             let mut score_qb = sqlx::QueryBuilder::new(
                 "INSERT IGNORE INTO statpp.score (osu_score_id, osu_user, beatmap_mod, score, score_pp) ",
             );
-            score_qb.push_values(scores_to_insert, |mut b, (sid, uid, bmid, sc)| {
+            score_qb.push_values(scores_to_insert, |mut b, (sid, uid, bmid, sc, pp)| {
                 b.push_bind(sid)
                     .push_bind(uid)
                     .push_bind(bmid)
                     .push_bind(sc)
-                    .push_bind(1.0); // score_pp default per Python logic
+                    .push_bind(pp); // score_pp from source
             });
             score_qb.build().execute(pool).await?;
         }
