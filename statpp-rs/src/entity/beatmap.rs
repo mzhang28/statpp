@@ -2,7 +2,7 @@
 
 use sea_orm::entity::prelude::*;
 
-#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "beatmap")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
@@ -10,6 +10,8 @@ pub struct Model {
     pub title: String,
     pub artist: String,
     pub diffname: String,
+    #[sea_orm(column_type = "Double")]
+    pub osu_difficulty: f64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

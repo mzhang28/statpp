@@ -27,19 +27,11 @@ pub enum Relation {
         on_delete = "Cascade"
     )]
     Beatmap,
-    #[sea_orm(has_many = "super::score::Entity")]
-    Score,
 }
 
 impl Related<super::beatmap::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Beatmap.def()
-    }
-}
-
-impl Related<super::score::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Score.def()
     }
 }
 

@@ -7,6 +7,7 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: i32,
+    #[sea_orm(unique)]
     pub osu_id: i32,
     pub username: String,
     #[sea_orm(column_type = "Double")]
@@ -14,15 +15,6 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(has_many = "super::score::Entity")]
-    Score,
-}
-
-impl Related<super::score::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Score.def()
-    }
-}
+pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}

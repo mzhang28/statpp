@@ -5,6 +5,7 @@ extern crate serde_json;
 
 mod convert;
 mod entity;
+mod skill;
 mod train;
 
 use anyhow::Result;
@@ -20,6 +21,7 @@ struct Opt {
 enum Command {
     Convert,
     Train,
+    Skill,
 }
 
 #[tokio::main]
@@ -32,6 +34,9 @@ async fn main() -> Result<()> {
         }
         Command::Train => {
             train::run().await?;
+        }
+        Command::Skill => {
+            skill::run().await?;
         }
     }
 

@@ -7,7 +7,9 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: i32,
-    pub user: i32,
+    #[sea_orm(unique)]
+    pub osu_score_id: i64,
+    pub osu_user: i32,
     pub beatmap_mod: i32,
     pub score: i32,
     #[sea_orm(column_type = "Double")]
@@ -15,35 +17,6 @@ pub struct Model {
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-pub enum Relation {
-    #[sea_orm(
-        belongs_to = "super::beatmapmod::Entity",
-        from = "Column::BeatmapMod",
-        to = "super::beatmapmod::Column::Id",
-        on_update = "Restrict",
-        on_delete = "Cascade"
-    )]
-    Beatmapmod,
-    #[sea_orm(
-        belongs_to = "super::user::Entity",
-        from = "Column::User",
-        to = "super::user::Column::Id",
-        on_update = "Restrict",
-        on_delete = "Cascade"
-    )]
-    User,
-}
-
-impl Related<super::beatmapmod::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::Beatmapmod.def()
-    }
-}
-
-impl Related<super::user::Entity> for Entity {
-    fn to() -> RelationDef {
-        Relation::User.def()
-    }
-}
+pub enum Relation {}
 
 impl ActiveModelBehavior for ActiveModel {}
