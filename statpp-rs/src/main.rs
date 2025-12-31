@@ -5,13 +5,10 @@ extern crate serde_json;
 
 mod convert;
 mod entity;
+mod train;
 
 use anyhow::Result;
-use burn::backend::Wgpu;
-use burn::tensor::Tensor;
 use clap::Parser;
-
-type Backend = Wgpu;
 
 #[derive(Parser, Debug)]
 struct Opt {
@@ -22,6 +19,7 @@ struct Opt {
 #[derive(Parser, Debug)]
 enum Command {
     Convert,
+    Train,
 }
 
 #[tokio::main]
@@ -31,6 +29,9 @@ async fn main() -> Result<()> {
     match opt.command {
         Command::Convert => {
             convert::run().await?;
+        }
+        Command::Train => {
+            train::run().await?;
         }
     }
 
