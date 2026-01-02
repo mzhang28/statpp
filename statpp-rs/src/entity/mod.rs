@@ -4,5 +4,7 @@ pub mod prelude;
 
 pub mod beatmap;
 pub mod beatmapmod;
+pub mod beatmapmod_vector;
 pub mod score;
 pub mod user;
+pub mod user_vector;

@@ -17,15 +17,6 @@ struct ScoreMetadata {
     mods: Vec<ModItem>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-struct SourceScore {
-    id: u64,
-    user_id: u32,
-    beatmap_id: u32,
-    total_score: u32,
-    data: Vec<u8>, // JSON
-}
-
 struct IndexDef {
     name: String,
     columns: Vec<String>,
@@ -427,12 +418,12 @@ async fn migrate_scores(pool: &Pool<MySql>, user_map: &HashMap<u32, i32>) -> Res
         for (score, mod_str) in batch_data {
             let target_user_id = match user_map.get(&score.user_id) {
                 Some(uid) => *uid,
-                None => continue, // Skip score if user not in target DB
+                None => unreachable!("somehow missed uid {}", score.user_id), // Skip score if user not in target DB
             };
 
             let beatmap_mod_id = match beatmap_mod_cache.get(&(score.beatmap_id, mod_str)) {
                 Some(bmid) => *bmid,
-                None => continue, // Should not happen
+                None => unreachable!("somehow misseed bmid {}", score.beatmap_id), // Should not happen
             };
 
             let pp_val = score.pp.unwrap_or(0.0);

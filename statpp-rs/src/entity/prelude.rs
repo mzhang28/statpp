@@ -2,5 +2,7 @@
 
 pub use super::beatmap::Entity as Beatmap;
 pub use super::beatmapmod::Entity as Beatmapmod;
+pub use super::beatmapmod_vector::Entity as BeatmapmodVector;
 pub use super::score::Entity as Score;
 pub use super::user::Entity as User;
+pub use super::user_vector::Entity as UserVector;

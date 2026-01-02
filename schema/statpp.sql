@@ -49,7 +49,7 @@ CREATE TABLE `beatmapmod` (
   UNIQUE KEY `unq_beatmapmod__beatmap_mod` (`beatmap`,`mod`),
   KEY `idx_beatmapmod__mod` (`mod`),
   CONSTRAINT `fk_beatmapmod__beatmap` FOREIGN KEY (`beatmap`) REFERENCES `beatmap` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=2053690 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=2053656 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -88,7 +88,7 @@ CREATE TABLE `user` (
   `total_pp` double NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `osu_id` (`osu_id`)
-) ENGINE=InnoDB AUTO_INCREMENT=94994 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=10001 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 /*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
@@ -100,4 +100,4 @@ CREATE TABLE `user` (
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2025-12-30 21:52:35
+-- Dump completed on 2025-12-31 12:05:56

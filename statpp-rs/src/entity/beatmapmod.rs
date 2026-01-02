@@ -27,11 +27,19 @@ pub enum Relation {
         on_delete = "Cascade"
     )]
     Beatmap,
+    #[sea_orm(has_one = "super::beatmapmod_vector::Entity")]
+    BeatmapmodVector,
 }
 
 impl Related<super::beatmap::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Beatmap.def()
+    }
+}
+
+impl Related<super::beatmapmod_vector::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::BeatmapmodVector.def()
     }
 }
 
