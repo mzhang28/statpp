@@ -49,7 +49,22 @@ CREATE TABLE `beatmapmod` (
   UNIQUE KEY `unq_beatmapmod__beatmap_mod` (`beatmap`,`mod`),
   KEY `idx_beatmapmod__mod` (`mod`),
   CONSTRAINT `fk_beatmapmod__beatmap` FOREIGN KEY (`beatmap`) REFERENCES `beatmap` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=2053656 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=390467 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `beatmapmod_vector`
+--
+
+DROP TABLE IF EXISTS `beatmapmod_vector`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `beatmapmod_vector` (
+  `beatmapmod_id` int(11) NOT NULL,
+  `vec` blob DEFAULT NULL,
+  PRIMARY KEY (`beatmapmod_id`),
+  CONSTRAINT `fk_beatmapmod_vector` FOREIGN KEY (`beatmapmod_id`) REFERENCES `beatmapmod` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -66,12 +81,8 @@ CREATE TABLE `score` (
   `beatmap_mod` int(11) NOT NULL,
   `score` int(11) NOT NULL,
   `score_pp` double NOT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `osu_score_id` (`osu_score_id`),
-  KEY `idx_score__beatmap_mod` (`beatmap_mod`),
-  KEY `idx_score__score_pp` (`score_pp`),
-  KEY `idx_score__user` (`osu_user`)
-) ENGINE=InnoDB AUTO_INCREMENT=54126273 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB AUTO_INCREMENT=5250001 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -90,14 +101,26 @@ CREATE TABLE `user` (
   UNIQUE KEY `osu_id` (`osu_id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=10001 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
-/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
 
-/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
-/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
-/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
-/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
-/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
-/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
-/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+--
+-- Table structure for table `user_vector`
+--
 
--- Dump completed on 2025-12-31 12:05:56
+DROP TABLE IF EXISTS `user_vector`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `user_vector` (
+  `user_id` int(11) NOT NULL,
+  `vec` blob DEFAULT NULL,
+  PRIMARY KEY (`user_id`),
+  CONSTRAINT `fk_user_vector_user` FOREIGN KEY (`user_id`) REFERENCES `user` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_uca1400_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping events for database 'statpp'
+--
+
+--
+-- Dumping routines for database 'statpp'
+--

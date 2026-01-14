@@ -3,3 +3,6 @@
 docker-data
 *_performance_osu_top_*
 prefect-data/
+
+training_data
+*.pth
