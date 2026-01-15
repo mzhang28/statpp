@@ -6,3 +6,4 @@ prefect-data/
 
 training_data
 *.pth
+.env

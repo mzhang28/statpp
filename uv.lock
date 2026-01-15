@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -1271,6 +1271,30 @@ wheels = [
 ]
 
 [[package]]
+name = "osrparse"
+version = "6.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e4/84/22fad6d5a50c5ae1d1c802a6ca1bca465e966e1961c97664e9e104696fea/osrparse-6.0.2.tar.gz", hash = "sha256:7415faee6d2eeabb29dbd85b3a15c4ac960a6b5acb7b757ff503f215e7ef7ebb", size = 11067, upload-time = "2022-12-11T18:14:34.827Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/68/4a/91226f5dc3d19cb7d5ea6b1818e533806056932f904b72910019bbd9e46a/osrparse-6.0.2-py3-none-any.whl", hash = "sha256:fb80796621d0c1c2f4ff53d6a0468cf5cec9b11c5e01d479f170bdfd00549044", size = 11879, upload-time = "2022-12-11T18:14:32.687Z" },
+]
+
+[[package]]
+name = "ossapi"
+version = "5.3.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "osrparse" },
+    { name = "requests" },
+    { name = "requests-oauthlib" },
+    { name = "typing-utils" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/40/e5/4bef970379ba95716844611d1c4d7f094c841b0805ce5c96d38c32cc2637/ossapi-5.3.3.tar.gz", hash = "sha256:bde2280bbecb352bc395debd9f5c23fb403d5df8c013c36ae7bcd279b251da73", size = 98874, upload-time = "2025-09-21T18:46:16.206Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/7f/aacccb941a02664bc0e181b054b054bb6221ce499c8c7ccb8382c6cc218f/ossapi-5.3.3-py3-none-any.whl", hash = "sha256:913091c3ea91b83184f9029c54b09acaf6912ef47b47cf65f0f62405a5815465", size = 95609, upload-time = "2025-09-21T18:48:24.296Z" },
+]
+
+[[package]]
 name = "packaging"
 version = "25.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2438,12 +2462,14 @@ dependencies = [
     { name = "joblib" },
     { name = "mysql-connector-python" },
     { name = "numpy" },
+    { name = "ossapi" },
     { name = "pandas" },
     { name = "polars" },
     { name = "pony" },
     { name = "prefect" },
     { name = "pyarrow" },
     { name = "pymysql" },
+    { name = "python-dotenv" },
     { name = "reflex" },
     { name = "scikit-learn" },
     { name = "scipy" },
@@ -2465,12 +2491,14 @@ requires-dist = [
     { name = "joblib", specifier = ">=1.5.1" },
     { name = "mysql-connector-python", specifier = ">=9.3.0" },
     { name = "numpy", specifier = ">=2.3.1" },
+    { name = "ossapi", specifier = ">=5.3.3" },
     { name = "pandas", specifier = ">=2.3.0" },
     { name = "polars", specifier = ">=1.37.1" },
     { name = "pony", specifier = ">=0.7.19" },
     { name = "prefect", specifier = ">=3.4.7" },
     { name = "pyarrow", specifier = ">=22.0.0" },
     { name = "pymysql", specifier = ">=1.1.1" },
+    { name = "python-dotenv", specifier = ">=1.1.1" },
     { name = "reflex", specifier = ">=0.8.3" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "scipy", specifier = ">=1.16.0" },
@@ -2622,6 +2650,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f8/b1/0c11f5058406b3af7609f121aaa6b609744687f1d158b3c3a5bf4cc94238/typing_inspection-0.4.1.tar.gz", hash = "sha256:6ae134cc0203c33377d43188d4064e9b357dba58cff3185f22924610e70a9d28", size = 75726, upload-time = "2025-05-21T18:55:23.885Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/17/69/cd203477f944c353c31bade965f880aa1061fd6bf05ded0726ca845b6ff7/typing_inspection-0.4.1-py3-none-any.whl", hash = "sha256:389055682238f53b04f7badcb49b989835495a96700ced5dab2d8feae4b26f51", size = 14552, upload-time = "2025-05-21T18:55:22.152Z" },
+]
+
+[[package]]
+name = "typing-utils"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/9f/ddc5ed9182f49d6ca5d87a7629dea81ca076db54f30f78d057a081f5ec50/typing_utils-0.1.0.tar.gz", hash = "sha256:8ff6b6705414b82575ad5ae0925ac414a9650fb8c5718289b1327dec61252f65", size = 9576, upload-time = "2021-05-23T18:12:35.674Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/6e/99fe160a19676051070aa1da4ca44aac2a213e79ba1a492b5f03facf6447/typing_utils-0.1.0-py3-none-any.whl", hash = "sha256:6bd26f3d38a5dd526ca3a59f0a451ccb59bcee9dc829c872dd6c0aae4ec8bbef", size = 10161, upload-time = "2021-05-23T18:12:33.466Z" },
 ]
 
 [[package]]

@@ -6,7 +6,7 @@ import numpy as np
 from tqdm import tqdm
 import json
 import os
-from sklearn.decomposition import PCA
+import random
 
 # ------------------------------------------------------------------
 # CONFIGURATION
@@ -16,10 +16,11 @@ PARQUET_PATH = DATA_DIR / "train_final.parquet"
 MAP_MAPPINGS_PATH = DATA_DIR / "mappings_maps.json"
 USER_MAPPINGS_PATH = DATA_DIR / "mappings_users.json"
 
-BATCH_SIZE = 65536
-LEARNING_RATE = 0.001
-EPOCHS = 5
-EMBEDDING_DIM = 16
+BATCH_SIZE = 8192           # NCF prefers slightly smaller batches than pure MF
+LEARNING_RATE = 0.001       # Standard Adam LR
+EPOCHS = 15                 # NCF converges/overfits faster
+MF_DIM = 32                 # Dimension for Linear Physics
+MLP_DIMS = [64, 32, 16]     # Dimensions for Deep Logic
 DEVICE = "cuda" if torch.cuda.is_available(
 ) else "mps" if torch.backends.mps.is_available() else "cpu"
 
@@ -35,8 +36,6 @@ class OsuVectorDataset:
         print("Loading parquet file...")
         q = (
             pl.scan_parquet(path)
-            # CHANGE: Removed the mod filter!
-            # We now WANT to train on different mod combinations as distinct items.
             .filter(pl.col("score_norm").is_not_nan())
             .select(["user_idx", "map_idx", "score_norm"])
         )
@@ -46,121 +45,202 @@ class OsuVectorDataset:
         user_counts = self.df.group_by("user_idx").count()
         self.df = self.df.join(user_counts, on="user_idx")
 
-        # Clip counts to min 1 to avoid divide by zero
         counts = np.maximum(self.df["count"].to_numpy(), 1)
         weights_numpy = 1.0 / np.sqrt(counts)
 
         self.n_users = self.df["user_idx"].max() + 1
-        self.n_maps = self.df["map_idx"].max() + 1
+        self.n_items = self.df["map_idx"].max() + 1
         self.dataset_len = len(self.df)
-        print(
-            f"Dimensions: {self.n_users} Users x {self.n_maps} Items (Map+Mods)")
+        print(f"Dimensions: {self.n_users} Users x {self.n_items} Items")
 
         print(f"Moving data to {device}...")
         self.users = torch.tensor(
             self.df["user_idx"].to_numpy(), dtype=torch.int32, device=device)
-        self.maps = torch.tensor(
+        self.items = torch.tensor(
             self.df["map_idx"].to_numpy(), dtype=torch.int32, device=device)
         self.targets = torch.tensor(
             self.df["score_norm"].to_numpy(), dtype=torch.float32, device=device)
         self.weights = torch.tensor(
             weights_numpy, dtype=torch.float32, device=device)
 
-        if torch.isnan(self.targets).any() or torch.isnan(self.weights).any():
-            raise ValueError(
-                "NaNs found in input data! Check your parquet generation.")
-
         del self.df, weights_numpy
 
 # ------------------------------------------------------------------
-# 2. MODEL DEFINITION
+# 2. NEUMF MODEL DEFINITION
 # ------------------------------------------------------------------
 
 
-class VectorModel(nn.Module):
-    def __init__(self, num_users, num_maps, dim=16):
+class NeuMF(nn.Module):
+    def __init__(self, num_users, num_items, mf_dim=32, mlp_dims=[64, 32, 16], dropout=0.1):
         super().__init__()
-        self.user_vectors = nn.Embedding(num_users, dim)
-        self.map_vectors = nn.Embedding(num_maps, dim)
-        self.user_bias = nn.Embedding(num_users, 1)
-        self.map_diff = nn.Embedding(num_maps, 1)
 
-        # Initialize small to prevent explosion
-        nn.init.normal_(self.user_vectors.weight, std=0.01)
-        nn.init.normal_(self.map_vectors.weight, std=0.01)
-        nn.init.zeros_(self.user_bias.weight)
-        nn.init.zeros_(self.map_diff.weight)
+        # --- 1. GMF Branch (Linear Physics) ---
+        self.user_embedding_mf = nn.Embedding(num_users, mf_dim)
+        self.item_embedding_mf = nn.Embedding(num_items, mf_dim)
 
-    def forward(self, user_idx, map_idx):
-        u_vec = self.user_vectors(user_idx)
-        m_vec = self.map_vectors(map_idx)
-        u_b = self.user_bias(user_idx).squeeze()
-        m_d = self.map_diff(map_idx).squeeze()
+        # --- 2. MLP Branch (Non-Linear Nuance) ---
+        # Note: Input to MLP is User_Vec + Item_Vec (Concatenated)
+        self.user_embedding_mlp = nn.Embedding(num_users, mlp_dims[0] // 2)
+        self.item_embedding_mlp = nn.Embedding(num_items, mlp_dims[0] // 2)
 
-        interaction = (u_vec * m_vec).sum(dim=1)
-        logits = interaction + u_b - m_d
+        layers = []
+        in_dim = mlp_dims[0]
 
-        return torch.clamp(logits, min=-15.0, max=15.0)
+        for out_dim in mlp_dims[1:]:
+            layers.append(nn.Linear(in_dim, out_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            in_dim = out_dim
+
+        self.mlp_layers = nn.Sequential(*layers)
+
+        # --- 3. Fusion ---
+        # Input: MF_Output (mf_dim) + MLP_Output (last_dim)
+        self.predict_layer = nn.Linear(mf_dim + mlp_dims[-1], 1)
+
+        self._init_weights()
+
+    def _init_weights(self):
+        # Small random init for embeddings
+        nn.init.normal_(self.user_embedding_mf.weight, std=0.01)
+        nn.init.normal_(self.item_embedding_mf.weight, std=0.01)
+        nn.init.xavier_uniform_(self.user_embedding_mlp.weight)
+        nn.init.xavier_uniform_(self.item_embedding_mlp.weight)
+
+        # He Init for ReLU layers
+        for layer in self.mlp_layers:
+            if isinstance(layer, nn.Linear):
+                nn.init.kaiming_uniform_(layer.weight)
+
+        # LeCun Init for final layer (Linear)
+        nn.init.kaiming_uniform_(
+            self.predict_layer.weight, nonlinearity='linear')
+
+    def forward(self, user_idx, item_idx):
+        # GMF
+        u_mf = self.user_embedding_mf(user_idx)
+        i_mf = self.item_embedding_mf(item_idx)
+        gmf_vec = u_mf * i_mf
+
+        # MLP
+        u_mlp = self.user_embedding_mlp(user_idx)
+        i_mlp = self.item_embedding_mlp(item_idx)
+        mlp_vec = torch.cat([u_mlp, i_mlp], dim=1)
+        mlp_vec = self.mlp_layers(mlp_vec)
+
+        # Fuse
+        vector = torch.cat([gmf_vec, mlp_vec], dim=1)
+        logits = self.predict_layer(vector)
+
+        return torch.clamp(logits.squeeze(), min=-15.0, max=15.0)
 
 # ------------------------------------------------------------------
-# 3. ANALYSIS TOOLS (Updated for String Keys)
+# 3. ANALYSIS TOOLS (Discriminative Power)
 # ------------------------------------------------------------------
 
 
-def run_pca_analysis(model):
+def analyze_and_rate_users(model, dataset, device):
     print("\n" + "="*60)
-    print("  PCA INTERPRETABILITY ANALYSIS")
+    print("  ANALYZING SKILL WEIGHTS & USER RATINGS")
     print("="*60)
 
-    # 1. Load Mappings
+    # Load Mappings
     try:
         with open(MAP_MAPPINGS_PATH, "r") as f:
-            beatmap_map = json.load(f)
-            # CHANGE: Values are now strings like "1234|HD,DT". Do NOT cast to int.
-            idx_to_map_id = {v: k for k, v in beatmap_map.items()}
-    except FileNotFoundError:
-        print("Warning: mappings_maps.json not found.")
-        idx_to_map_id = {}
-
-    try:
+            idx_to_map = {v: k for k, v in json.load(f).items()}
         with open(USER_MAPPINGS_PATH, "r") as f:
-            user_map = json.load(f)
-            idx_to_user_id = {v: k for k, v in user_map.items()}
-    except FileNotFoundError:
-        print("Warning: mappings_users.json not found.")
-        idx_to_user_id = {}
+            idx_to_user = {v: k for k, v in json.load(f).items()}
+    except:
+        idx_to_map = {}
+        idx_to_user = {}
 
-    # 2. Extract Vectors
-    map_vecs = model.map_vectors.weight.detach().cpu().numpy()
-    user_vecs = model.user_vectors.weight.detach().cpu().numpy()
+    # --- STEP 1: Find "High Weight" Maps ---
+    # We define weight by Discrimination Variance.
+    # If a map produces the same score for everyone, it has Low Weight.
+    # If a map separates users (0.1 vs 0.9), it has High Weight.
 
-    if np.isnan(map_vecs).any():
-        print("Error: Map vectors contain NaN.")
-        return
+    print("Calculating Discrimination Power (Map Weights)...")
 
-    # 3. Fit PCA
-    pca = PCA(n_components=EMBEDDING_DIM)
-    map_pcs = pca.fit_transform(map_vecs)
-    user_pcs = pca.transform(user_vecs)
-    var_ratios = pca.explained_variance_ratio_
+    # 1. Sample 5000 random maps to analyze
+    sample_size = 5000
+    map_indices = torch.randint(
+        0, dataset.n_items, (sample_size,), device=device)
 
-    # 4. Print Results (Widened columns for mod strings)
-    print(f"\n{'PC':<3} | {'Var %':<6} | {'High Map (+)':<25} | {'Low Map (-)':<25} | {'High User (+)':<15}")
-    print("-" * 90)
+    # 2. Sample 100 random users as a "Reference Population"
+    ref_users = torch.randint(0, dataset.n_users, (100,), device=device)
 
-    for dim in range(min(5, EMBEDDING_DIM)):
-        top_map_idx = np.argmax(map_pcs[:, dim])
-        bot_map_idx = np.argmin(map_pcs[:, dim])
+    map_weights = {}  # map_idx -> variance
 
-        # Keys are now strings like "1005|DT"
-        top_map_real = idx_to_map_id.get(top_map_idx, str(top_map_idx))
-        bot_map_real = idx_to_map_id.get(bot_map_idx, str(bot_map_idx))
+    with torch.no_grad():
+        # Batch process maps to save time
+        # We need to run (100 users) against (1 map) repeatedly
+        # Efficient way: Broadcasitng is tricky with Embedding layers, so we loop batch.
 
-        top_user_idx = np.argmax(user_pcs[:, dim])
-        top_user_real = idx_to_user_id.get(top_user_idx, str(top_user_idx))
+        batch_maps = 100  # Process 100 maps at a time
+        for i in range(0, sample_size, batch_maps):
+            batch_m_idxs = map_indices[i: i+batch_maps]
 
-        print(
-            f"{dim:<3} | {var_ratios[dim]*100:5.1f}% | {top_map_real:<25} | {bot_map_real:<25} | {top_user_real:<15}")
+            # Create pairs: (User1, Map1), (User2, Map1)... (User100, Map100)
+            # Actually simplest is just loop the 100 maps
+            for m_idx in batch_m_idxs:
+                m_repeated = m_idx.repeat(100)
+                logits = model(ref_users, m_repeated)
+                scores = torch.sigmoid(logits)
+
+                # Variance = Discrimination Power
+                var = torch.var(scores).item()
+                map_weights[m_idx.item()] = var
+
+    # Sort maps by weight
+    sorted_maps = sorted(map_weights.items(), key=lambda x: x[1], reverse=True)
+
+    print(f"\n--- Top 5 'High Weight' Maps (Skill Checks) ---")
+    for mid, var in sorted_maps[:5]:
+        name = idx_to_map.get(mid, str(mid))
+        print(f"Map {name:<20} | Weight: {var:.4f}")
+
+    print(f"\n--- Top 5 'Low Weight' Maps (Farm/Generic) ---")
+    for mid, var in sorted_maps[-5:]:
+        name = idx_to_map.get(mid, str(mid))
+        print(f"Map {name:<20} | Weight: {var:.4f}")
+
+    # --- STEP 2: Rate Users based on High Weight Maps ---
+    # We define "Underrated God" as someone who scores HIGH on High Weight maps.
+    print("\nCalculating User Ratings...")
+
+    # Get indices of top 100 high-weight maps
+    top_map_indices = torch.tensor(
+        [x[0] for x in sorted_maps[:100]], device=device)
+
+    # Evaluate ALL users on these 100 specific maps
+    # This simulates "How would you do on the hardest skill checks?"
+
+    # Because N_Users is huge, we just sample top active users or randoms for demo
+    # Let's do a sample of 2000 users
+    sample_users = torch.randint(0, dataset.n_users, (2000,), device=device)
+
+    user_ratings = []
+
+    with torch.no_grad():
+        for u_idx in tqdm(sample_users, desc="Rating Users"):
+            # Repeat user 100 times to match the 100 maps
+            u_repeated = u_idx.repeat(100)
+
+            logits = model(u_repeated, top_map_indices)
+            scores = torch.sigmoid(logits)
+
+            # Rating = Mean Score on High Weight Maps
+            # (You could also do weighted sum)
+            rating = scores.mean().item() * 10000
+            user_ratings.append((u_idx.item(), rating))
+
+    # Sort
+    user_ratings.sort(key=lambda x: x[1], reverse=True)
+
+    print("\n--- Top 5 'Underrated God' Players (Sampled) ---")
+    for rank, (uid, rating) in enumerate(user_ratings[:5], 1):
+        real_uid = idx_to_user.get(uid, str(uid))
+        print(f"#{rank} | User {real_uid:<15} | Rating: {rating:.0f}")
 
 # ------------------------------------------------------------------
 # 4. TRAINING LOOP
@@ -169,13 +249,17 @@ def run_pca_analysis(model):
 
 def train():
     dataset = OsuVectorDataset(PARQUET_PATH, DEVICE)
-    model = VectorModel(dataset.n_users, dataset.n_maps,
-                        dim=EMBEDDING_DIM).to(DEVICE)
+    model = NeuMF(
+        dataset.n_users,
+        dataset.n_items,
+        mf_dim=MF_DIM,
+        mlp_dims=MLP_DIMS
+    ).to(DEVICE)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.BCEWithLogitsLoss(reduction='none')
 
-    print(f"\n--- Starting Stable Training ---")
+    print(f"\n--- Starting NeuMF Training ---")
 
     indices = torch.arange(dataset.dataset_len,
                            device=DEVICE, dtype=torch.int64)
@@ -190,33 +274,36 @@ def train():
         pbar = tqdm(range(steps_per_epoch), desc=f"Epoch {epoch+1}/{EPOCHS}")
 
         for i in pbar:
-            start = i * BATCH_SIZE
-            end = start + BATCH_SIZE
-            batch_idx = shuffled_indices[start:end]
+            batch_idx = shuffled_indices[i * BATCH_SIZE: (i + 1) * BATCH_SIZE]
 
-            logits = model(dataset.users[batch_idx], dataset.maps[batch_idx])
+            # Forward
+            logits = model(dataset.users[batch_idx], dataset.items[batch_idx])
 
+            # Weighted Loss
             raw_loss = criterion(logits, dataset.targets[batch_idx])
-            weighted_loss = (raw_loss * dataset.weights[batch_idx]).mean()
+            loss = (raw_loss * dataset.weights[batch_idx]).mean()
 
             optimizer.zero_grad()
-            weighted_loss.backward()
+            loss.backward()
+
+            # Clip gradients (Critical for NCF stability)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
             optimizer.step()
 
-            curr_loss = weighted_loss.item()
-            if np.isnan(curr_loss):
-                print("LOSS IS NAN - STOPPING")
-                return
-
+            curr_loss = loss.item()
             total_loss += curr_loss
+
             if i % 100 == 0:
                 pbar.set_postfix({'loss': f"{curr_loss:.4f}"})
 
-        print(f"Epoch {epoch+1} Avg Loss: {total_loss / steps_per_epoch:.4f}")
+        print(f"Epoch {epoch+1} Avg Loss: {total_loss/steps_per_epoch:.4f}")
 
-    run_pca_analysis(model)
-    torch.save(model.state_dict(), "osu_vector_model.pth")
+    # Save
+    torch.save(model.state_dict(), "osu_neumf_model.pth")
+
+    # Run Analysis
+    analyze_and_rate_users(model, dataset, DEVICE)
 
 
 if __name__ == "__main__":
