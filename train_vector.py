@@ -4,6 +4,7 @@ import torch.nn as nn
 import polars as pl
 import numpy as np
 from tqdm import tqdm
+import zstandard
 import json
 import os
 import random
@@ -13,8 +14,8 @@ import random
 # ------------------------------------------------------------------
 DATA_DIR = Path("./training_data")
 PARQUET_PATH = DATA_DIR / "train_final.parquet"
-MAP_MAPPINGS_PATH = DATA_DIR / "mappings_maps.json"
-USER_MAPPINGS_PATH = DATA_DIR / "mappings_users.json"
+MAP_MAPPINGS_PATH = DATA_DIR / "mappings_maps.json.zst"
+USER_MAPPINGS_PATH = DATA_DIR / "mappings_users.json.zst"
 
 BATCH_SIZE = 2**16           # NCF prefers slightly smaller batches than pure MF
 LEARNING_RATE = 0.001       # Standard Adam LR
@@ -147,9 +148,16 @@ def analyze_and_rate_users(model, dataset, device):
     # --- Load Nested Metadata JSONs ---
     print("Loading metadata mappings...")
     try:
-        with open(MAP_MAPPINGS_PATH, "r") as f:
-            raw_map_data = json.load(f)
-        with open(USER_MAPPINGS_PATH, "r") as f:
+        zstd = zstandard.ZstdDecompressor()
+        with open(MAP_MAPPINGS_PATH, "rb") as f:
+            data = f.read()
+            data_raw = zstd.decompress(data)
+            raw_map_data = json.load(data_raw)
+
+        zstd = zstandard.ZstdDecompressor()
+        with open(USER_MAPPINGS_PATH, "rb") as f:
+            data = f.read()
+            data_raw = zstd.decompress(data)
             raw_user_data = json.load(f)
 
         # Invert User Map: Index -> "Name (ID)"

@@ -25,6 +25,7 @@ dependencies = [
     "scipy>=1.16.0",
     "torch>=2.7.1",
     "tqdm>=4.67.1",
+    "zstandard>=0.25.0",
 ]
 
 [tool.uv]
