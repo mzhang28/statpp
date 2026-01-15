@@ -16,7 +16,7 @@ PARQUET_PATH = DATA_DIR / "train_final.parquet"
 MAP_MAPPINGS_PATH = DATA_DIR / "mappings_maps.json"
 USER_MAPPINGS_PATH = DATA_DIR / "mappings_users.json"
 
-BATCH_SIZE = 8192           # NCF prefers slightly smaller batches than pure MF
+BATCH_SIZE = 2**16           # NCF prefers slightly smaller batches than pure MF
 LEARNING_RATE = 0.001       # Standard Adam LR
 EPOCHS = 15                 # NCF converges/overfits faster
 MF_DIM = 32                 # Dimension for Linear Physics
@@ -45,6 +45,7 @@ class OsuVectorDataset:
         user_counts = self.df.group_by("user_idx").count()
         self.df = self.df.join(user_counts, on="user_idx")
 
+        # Inverse Sqrt Weighting to prevent power users from dominating the loss
         counts = np.maximum(self.df["count"].to_numpy(), 1)
         weights_numpy = 1.0 / np.sqrt(counts)
 
@@ -85,13 +86,11 @@ class NeuMF(nn.Module):
 
         layers = []
         in_dim = mlp_dims[0]
-
         for out_dim in mlp_dims[1:]:
             layers.append(nn.Linear(in_dim, out_dim))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(dropout))
             in_dim = out_dim
-
         self.mlp_layers = nn.Sequential(*layers)
 
         # --- 3. Fusion ---
@@ -132,6 +131,7 @@ class NeuMF(nn.Module):
         vector = torch.cat([gmf_vec, mlp_vec], dim=1)
         logits = self.predict_layer(vector)
 
+        # Clamp logits to prevent infinity in loss (Sigmoid range -15 to 15 is sufficient)
         return torch.clamp(logits.squeeze(), min=-15.0, max=15.0)
 
 # ------------------------------------------------------------------
@@ -144,103 +144,109 @@ def analyze_and_rate_users(model, dataset, device):
     print("  ANALYZING SKILL WEIGHTS & USER RATINGS")
     print("="*60)
 
-    # Load Mappings
+    # --- Load Nested Metadata JSONs ---
+    print("Loading metadata mappings...")
     try:
         with open(MAP_MAPPINGS_PATH, "r") as f:
-            idx_to_map = {v: k for k, v in json.load(f).items()}
+            raw_map_data = json.load(f)
         with open(USER_MAPPINGS_PATH, "r") as f:
-            idx_to_user = {v: k for k, v in json.load(f).items()}
-    except:
+            raw_user_data = json.load(f)
+
+        # Invert User Map: Index -> "Name (ID)"
+        # Structure: "123": {"idx": 0, "name": "Cookiezi"}
+        idx_to_user = {}
+        for real_id, data in raw_user_data.items():
+            idx_to_user[data['idx']] = f"{data['name']} ({real_id})"
+
+        # Invert Map Map: Index -> "Artist - Title [Diff] +Mods"
+        # Structure: "1001|DT": {"idx": 0, "artist": "...", ...}
+        idx_to_map = {}
+        for key_str, data in raw_map_data.items():
+            # key_str is "beatmap_id|mods" (e.g., "12345|HD,DT")
+            parts = key_str.split("|")
+            mods = parts[1] if len(parts) > 1 and parts[1] else ""
+            mod_str = f"+{mods}" if mods else ""
+
+            # Format: Artist - Title [Version] +MODS
+            name = f"{data['artist']} - {data['title']} [{data['version']}] {mod_str}"
+            idx_to_map[data['idx']] = name
+
+    except Exception as e:
+        print(
+            f"Warning: Could not load metadata mappings ({e}). Using raw indices.")
         idx_to_map = {}
         idx_to_user = {}
 
     # --- STEP 1: Find "High Weight" Maps ---
     # We define weight by Discrimination Variance.
-    # If a map produces the same score for everyone, it has Low Weight.
-    # If a map separates users (0.1 vs 0.9), it has High Weight.
+
+    #
+    # We are looking for maps with steep slopes (High Variance in predictions).
+    # High Variance means the map sharply distinguishes between "Good" and "Bad" players.
 
     print("Calculating Discrimination Power (Map Weights)...")
 
-    # 1. Sample 5000 random maps to analyze
     sample_size = 5000
     map_indices = torch.randint(
         0, dataset.n_items, (sample_size,), device=device)
-
-    # 2. Sample 100 random users as a "Reference Population"
-    ref_users = torch.randint(0, dataset.n_users, (100,), device=device)
+    ref_users = torch.randint(
+        0, dataset.n_users, (100,), device=device)  # Reference population
 
     map_weights = {}  # map_idx -> variance
 
+    model.eval()
     with torch.no_grad():
-        # Batch process maps to save time
-        # We need to run (100 users) against (1 map) repeatedly
-        # Efficient way: Broadcasitng is tricky with Embedding layers, so we loop batch.
+        # Loop over sample maps
+        for m_idx in tqdm(map_indices, desc="Scanning Maps"):
+            # Create pairs: (Ref_Users, Current_Map)
+            m_repeated = m_idx.repeat(100)
+            logits = model(ref_users, m_repeated)
+            scores = torch.sigmoid(logits)
 
-        batch_maps = 100  # Process 100 maps at a time
-        for i in range(0, sample_size, batch_maps):
-            batch_m_idxs = map_indices[i: i+batch_maps]
+            # Variance = Discrimination Power
+            var = torch.var(scores).item()
+            map_weights[m_idx.item()] = var
 
-            # Create pairs: (User1, Map1), (User2, Map1)... (User100, Map100)
-            # Actually simplest is just loop the 100 maps
-            for m_idx in batch_m_idxs:
-                m_repeated = m_idx.repeat(100)
-                logits = model(ref_users, m_repeated)
-                scores = torch.sigmoid(logits)
-
-                # Variance = Discrimination Power
-                var = torch.var(scores).item()
-                map_weights[m_idx.item()] = var
-
-    # Sort maps by weight
     sorted_maps = sorted(map_weights.items(), key=lambda x: x[1], reverse=True)
 
     print(f"\n--- Top 5 'High Weight' Maps (Skill Checks) ---")
     for mid, var in sorted_maps[:5]:
-        name = idx_to_map.get(mid, str(mid))
-        print(f"Map {name:<20} | Weight: {var:.4f}")
+        name = idx_to_map.get(mid, f"Map {mid}")
+        # Truncate for display
+        print(f"{name[:50]:<50} | Weight: {var:.4f}")
 
     print(f"\n--- Top 5 'Low Weight' Maps (Farm/Generic) ---")
     for mid, var in sorted_maps[-5:]:
-        name = idx_to_map.get(mid, str(mid))
-        print(f"Map {name:<20} | Weight: {var:.4f}")
+        name = idx_to_map.get(mid, f"Map {mid}")
+        print(f"{name[:50]:<50} | Weight: {var:.4f}")
 
     # --- STEP 2: Rate Users based on High Weight Maps ---
-    # We define "Underrated God" as someone who scores HIGH on High Weight maps.
-    print("\nCalculating User Ratings...")
+    print("\nCalculating User Ratings on Top 100 Skill Maps...")
 
-    # Get indices of top 100 high-weight maps
     top_map_indices = torch.tensor(
         [x[0] for x in sorted_maps[:100]], device=device)
 
-    # Evaluate ALL users on these 100 specific maps
-    # This simulates "How would you do on the hardest skill checks?"
-
-    # Because N_Users is huge, we just sample top active users or randoms for demo
-    # Let's do a sample of 2000 users
+    # Sample 2000 users to rate (Rating everyone takes too long for a quick demo)
     sample_users = torch.randint(0, dataset.n_users, (2000,), device=device)
 
     user_ratings = []
 
     with torch.no_grad():
         for u_idx in tqdm(sample_users, desc="Rating Users"):
-            # Repeat user 100 times to match the 100 maps
             u_repeated = u_idx.repeat(100)
-
             logits = model(u_repeated, top_map_indices)
             scores = torch.sigmoid(logits)
 
-            # Rating = Mean Score on High Weight Maps
-            # (You could also do weighted sum)
-            rating = scores.mean().item() * 10000
+            # Rating = Sum of scores on Hard Maps * 100
+            rating = scores.sum().item() * 100
             user_ratings.append((u_idx.item(), rating))
 
-    # Sort
     user_ratings.sort(key=lambda x: x[1], reverse=True)
 
-    print("\n--- Top 5 'Underrated God' Players (Sampled) ---")
-    for rank, (uid, rating) in enumerate(user_ratings[:5], 1):
-        real_uid = idx_to_user.get(uid, str(uid))
-        print(f"#{rank} | User {real_uid:<15} | Rating: {rating:.0f}")
+    print("\n--- Top 10 'Underrated God' Players (Sampled) ---")
+    for rank, (uid, rating) in enumerate(user_ratings[:10], 1):
+        name = idx_to_user.get(uid, f"User {uid}")
+        print(f"#{rank:<2} | {name:<30} | Rating: {rating:.0f}")
 
 # ------------------------------------------------------------------
 # 4. TRAINING LOOP
@@ -249,12 +255,8 @@ def analyze_and_rate_users(model, dataset, device):
 
 def train():
     dataset = OsuVectorDataset(PARQUET_PATH, DEVICE)
-    model = NeuMF(
-        dataset.n_users,
-        dataset.n_items,
-        mf_dim=MF_DIM,
-        mlp_dims=MLP_DIMS
-    ).to(DEVICE)
+    model = NeuMF(dataset.n_users, dataset.n_items,
+                  mf_dim=MF_DIM, mlp_dims=MLP_DIMS).to(DEVICE)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.BCEWithLogitsLoss(reduction='none')
@@ -276,19 +278,14 @@ def train():
         for i in pbar:
             batch_idx = shuffled_indices[i * BATCH_SIZE: (i + 1) * BATCH_SIZE]
 
-            # Forward
             logits = model(dataset.users[batch_idx], dataset.items[batch_idx])
 
-            # Weighted Loss
             raw_loss = criterion(logits, dataset.targets[batch_idx])
             loss = (raw_loss * dataset.weights[batch_idx]).mean()
 
             optimizer.zero_grad()
             loss.backward()
-
-            # Clip gradients (Critical for NCF stability)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
             optimizer.step()
 
             curr_loss = loss.item()
@@ -299,10 +296,7 @@ def train():
 
         print(f"Epoch {epoch+1} Avg Loss: {total_loss/steps_per_epoch:.4f}")
 
-    # Save
     torch.save(model.state_dict(), "osu_neumf_model.pth")
-
-    # Run Analysis
     analyze_and_rate_users(model, dataset, DEVICE)
 
 
