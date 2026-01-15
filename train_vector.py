@@ -12,12 +12,13 @@ import random
 # ------------------------------------------------------------------
 # CONFIGURATION
 # ------------------------------------------------------------------
+MODEL_PATH = Path("./osu_neumf_model.pth")
 DATA_DIR = Path("./training_data")
 PARQUET_PATH = DATA_DIR / "train_final.parquet"
 MAP_MAPPINGS_PATH = DATA_DIR / "mappings_maps.json.zst"
 USER_MAPPINGS_PATH = DATA_DIR / "mappings_users.json.zst"
 
-BATCH_SIZE = 2**16           # NCF prefers slightly smaller batches than pure MF
+BATCH_SIZE = 2**17           # NCF prefers slightly smaller batches than pure MF
 LEARNING_RATE = 0.001       # Standard Adam LR
 EPOCHS = 15                 # NCF converges/overfits faster
 MF_DIM = 32                 # Dimension for Linear Physics
@@ -151,14 +152,14 @@ def analyze_and_rate_users(model, dataset, device):
         zstd = zstandard.ZstdDecompressor()
         with open(MAP_MAPPINGS_PATH, "rb") as f:
             data = f.read()
-            data_raw = zstd.decompress(data)
-            raw_map_data = json.load(data_raw)
+            data_raw = zstd.decompress(data).decode()
+            raw_map_data = json.loads(data_raw)
 
         zstd = zstandard.ZstdDecompressor()
         with open(USER_MAPPINGS_PATH, "rb") as f:
             data = f.read()
-            data_raw = zstd.decompress(data)
-            raw_user_data = json.load(f)
+            data_raw = zstd.decompress(data).decode()
+            raw_user_data = json.loads(data_raw)
 
         # Invert User Map: Index -> "Name (ID)"
         # Structure: "123": {"idx": 0, "name": "Cookiezi"}
@@ -304,9 +305,28 @@ def train():
 
         print(f"Epoch {epoch+1} Avg Loss: {total_loss/steps_per_epoch:.4f}")
 
-    torch.save(model.state_dict(), "osu_neumf_model.pth")
+    torch.save(model.state_dict(), MODEL_PATH)
+
+
+def analyze():
+    if not Path(MODEL_PATH).exists():
+        print(f"Error: Model file '{MODEL_PATH}' not found.")
+        exit(1)
+
+    # 1. Load Dataset (Need dimensions)
+    dataset = OsuVectorDataset(PARQUET_PATH, DEVICE)
+
+    # 2. Init Model
+    model = NeuMF(dataset.n_users, dataset.n_items, mf_dim=MF_DIM, mlp_dims=MLP_DIMS).to(DEVICE)
+
+    # 3. Load State Dict
+    print(f"Loading model weights from {MODEL_PATH}...")
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+    
+    # 4. Run Analysis
     analyze_and_rate_users(model, dataset, DEVICE)
 
 
 if __name__ == "__main__":
-    train()
+    # train()
+    analyze()
