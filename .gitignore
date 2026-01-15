@@ -4,6 +4,6 @@ docker-data
 *_performance_osu_top_*
 prefect-data/
 
-training_data
 *.pth
 .env
+training_data/user_metadata_cache.json
