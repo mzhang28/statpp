@@ -18,13 +18,16 @@ PARQUET_PATH = DATA_DIR / "train_final.parquet"
 MAP_MAPPINGS_PATH = DATA_DIR / "mappings_maps.json.zst"
 USER_MAPPINGS_PATH = DATA_DIR / "mappings_users.json.zst"
 
-BATCH_SIZE = 2**17           # NCF prefers slightly smaller batches than pure MF
-LEARNING_RATE = 0.001       # Standard Adam LR
-EPOCHS = 15                 # NCF converges/overfits faster
-MF_DIM = 32                 # Dimension for Linear Physics
-MLP_DIMS = [64, 32, 16]     # Dimensions for Deep Logic
-DEVICE = "cuda" if torch.cuda.is_available(
-) else "mps" if torch.backends.mps.is_available() else "cpu"
+BATCH_SIZE = 2**16  # NCF prefers slightly smaller batches than pure MF
+LEARNING_RATE = 0.001  # Standard Adam LR
+EPOCHS = 15  # NCF converges/overfits faster
+MF_DIM = 32  # Dimension for Linear Physics
+MLP_DIMS = [64, 32, 16]  # Dimensions for Deep Logic
+DEVICE = (
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available() else "cpu"
+)
 
 print(f"Using device: {DEVICE}")
 
@@ -58,15 +61,18 @@ class OsuVectorDataset:
 
         print(f"Moving data to {device}...")
         self.users = torch.tensor(
-            self.df["user_idx"].to_numpy(), dtype=torch.int32, device=device)
+            self.df["user_idx"].to_numpy(), dtype=torch.int32, device=device
+        )
         self.items = torch.tensor(
-            self.df["map_idx"].to_numpy(), dtype=torch.int32, device=device)
+            self.df["map_idx"].to_numpy(), dtype=torch.int32, device=device
+        )
         self.targets = torch.tensor(
-            self.df["score_norm"].to_numpy(), dtype=torch.float32, device=device)
-        self.weights = torch.tensor(
-            weights_numpy, dtype=torch.float32, device=device)
+            self.df["score_norm"].to_numpy(), dtype=torch.float32, device=device
+        )
+        self.weights = torch.tensor(weights_numpy, dtype=torch.float32, device=device)
 
         del self.df, weights_numpy
+
 
 # ------------------------------------------------------------------
 # 2. NEUMF MODEL DEFINITION
@@ -74,7 +80,9 @@ class OsuVectorDataset:
 
 
 class NeuMF(nn.Module):
-    def __init__(self, num_users, num_items, mf_dim=32, mlp_dims=[64, 32, 16], dropout=0.1):
+    def __init__(
+        self, num_users, num_items, mf_dim=32, mlp_dims=[64, 32, 16], dropout=0.1
+    ):
         super().__init__()
 
         # --- 1. GMF Branch (Linear Physics) ---
@@ -114,8 +122,7 @@ class NeuMF(nn.Module):
                 nn.init.kaiming_uniform_(layer.weight)
 
         # LeCun Init for final layer (Linear)
-        nn.init.kaiming_uniform_(
-            self.predict_layer.weight, nonlinearity='linear')
+        nn.init.kaiming_uniform_(self.predict_layer.weight, nonlinearity="linear")
 
     def forward(self, user_idx, item_idx):
         # GMF
@@ -136,15 +143,16 @@ class NeuMF(nn.Module):
         # Clamp logits to prevent infinity in loss (Sigmoid range -15 to 15 is sufficient)
         return torch.clamp(logits.squeeze(), min=-15.0, max=15.0)
 
+
 # ------------------------------------------------------------------
 # 3. ANALYSIS TOOLS (Discriminative Power)
 # ------------------------------------------------------------------
 
 
 def analyze_and_rate_users(model, dataset, device):
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("  ANALYZING SKILL WEIGHTS & USER RATINGS")
-    print("="*60)
+    print("=" * 60)
 
     # --- Load Nested Metadata JSONs ---
     print("Loading metadata mappings...")
@@ -165,7 +173,7 @@ def analyze_and_rate_users(model, dataset, device):
         # Structure: "123": {"idx": 0, "name": "Cookiezi"}
         idx_to_user = {}
         for real_id, data in raw_user_data.items():
-            idx_to_user[data['idx']] = f"{data['name']} ({real_id})"
+            idx_to_user[data["idx"]] = f"{data['name']} ({real_id})"
 
         # Invert Map Map: Index -> "Artist - Title [Diff] +Mods"
         # Structure: "1001|DT": {"idx": 0, "artist": "...", ...}
@@ -178,11 +186,10 @@ def analyze_and_rate_users(model, dataset, device):
 
             # Format: Artist - Title [Version] +MODS
             name = f"{data['artist']} - {data['title']} [{data['version']}] {mod_str}"
-            idx_to_map[data['idx']] = name
+            idx_to_map[data["idx"]] = name
 
     except Exception as e:
-        print(
-            f"Warning: Could not load metadata mappings ({e}). Using raw indices.")
+        print(f"Warning: Could not load metadata mappings ({e}). Using raw indices.")
         idx_to_map = {}
         idx_to_user = {}
 
@@ -196,10 +203,10 @@ def analyze_and_rate_users(model, dataset, device):
     print("Calculating Discrimination Power (Map Weights)...")
 
     sample_size = 5000
-    map_indices = torch.randint(
-        0, dataset.n_items, (sample_size,), device=device)
+    map_indices = torch.randint(0, dataset.n_items, (sample_size,), device=device)
     ref_users = torch.randint(
-        0, dataset.n_users, (100,), device=device)  # Reference population
+        0, dataset.n_users, (100,), device=device
+    )  # Reference population
 
     map_weights = {}  # map_idx -> variance
 
@@ -232,8 +239,7 @@ def analyze_and_rate_users(model, dataset, device):
     # --- STEP 2: Rate Users based on High Weight Maps ---
     print("\nCalculating User Ratings on Top 100 Skill Maps...")
 
-    top_map_indices = torch.tensor(
-        [x[0] for x in sorted_maps[:100]], device=device)
+    top_map_indices = torch.tensor([x[0] for x in sorted_maps[:100]], device=device)
 
     # Sample 2000 users to rate (Rating everyone takes too long for a quick demo)
     sample_users = torch.randint(0, dataset.n_users, (2000,), device=device)
@@ -257,6 +263,7 @@ def analyze_and_rate_users(model, dataset, device):
         name = idx_to_user.get(uid, f"User {uid}")
         print(f"#{rank:<2} | {name:<30} | Rating: {rating:.0f}")
 
+
 # ------------------------------------------------------------------
 # 4. TRAINING LOOP
 # ------------------------------------------------------------------
@@ -264,28 +271,27 @@ def analyze_and_rate_users(model, dataset, device):
 
 def train():
     dataset = OsuVectorDataset(PARQUET_PATH, DEVICE)
-    model = NeuMF(dataset.n_users, dataset.n_items,
-                  mf_dim=MF_DIM, mlp_dims=MLP_DIMS).to(DEVICE)
+    model = NeuMF(
+        dataset.n_users, dataset.n_items, mf_dim=MF_DIM, mlp_dims=MLP_DIMS
+    ).to(DEVICE)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    criterion = nn.BCEWithLogitsLoss(reduction='none')
+    criterion = nn.BCEWithLogitsLoss(reduction="none")
 
     print(f"\n--- Starting NeuMF Training ---")
 
-    indices = torch.arange(dataset.dataset_len,
-                           device=DEVICE, dtype=torch.int64)
+    indices = torch.arange(dataset.dataset_len, device=DEVICE, dtype=torch.int64)
     steps_per_epoch = (dataset.dataset_len + BATCH_SIZE - 1) // BATCH_SIZE
 
     for epoch in range(EPOCHS):
         model.train()
         total_loss = 0
 
-        shuffled_indices = indices[torch.randperm(
-            dataset.dataset_len, device=DEVICE)]
+        shuffled_indices = indices[torch.randperm(dataset.dataset_len, device=DEVICE)]
         pbar = tqdm(range(steps_per_epoch), desc=f"Epoch {epoch+1}/{EPOCHS}")
 
         for i in pbar:
-            batch_idx = shuffled_indices[i * BATCH_SIZE: (i + 1) * BATCH_SIZE]
+            batch_idx = shuffled_indices[i * BATCH_SIZE : (i + 1) * BATCH_SIZE]
 
             logits = model(dataset.users[batch_idx], dataset.items[batch_idx])
 
@@ -301,7 +307,7 @@ def train():
             total_loss += curr_loss
 
             if i % 100 == 0:
-                pbar.set_postfix({'loss': f"{curr_loss:.4f}"})
+                pbar.set_postfix({"loss": f"{curr_loss:.4f}"})
 
         print(f"Epoch {epoch+1} Avg Loss: {total_loss/steps_per_epoch:.4f}")
 
@@ -317,16 +323,18 @@ def analyze():
     dataset = OsuVectorDataset(PARQUET_PATH, DEVICE)
 
     # 2. Init Model
-    model = NeuMF(dataset.n_users, dataset.n_items, mf_dim=MF_DIM, mlp_dims=MLP_DIMS).to(DEVICE)
+    model = NeuMF(
+        dataset.n_users, dataset.n_items, mf_dim=MF_DIM, mlp_dims=MLP_DIMS
+    ).to(DEVICE)
 
     # 3. Load State Dict
     print(f"Loading model weights from {MODEL_PATH}...")
     model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-    
+
     # 4. Run Analysis
     analyze_and_rate_users(model, dataset, DEVICE)
 
 
 if __name__ == "__main__":
-    # train()
+    train()
     analyze()
