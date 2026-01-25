@@ -10,6 +10,7 @@ dependencies = [
     "dotenv>=0.9.9",
     "fastapi[standard]>=0.116.0",
     "joblib>=1.5.1",
+    "matplotlib>=3.10.8",
     "mysql-connector-python>=9.3.0",
     "numpy>=2.3.1",
     "ossapi>=5.3.3",
@@ -21,10 +22,13 @@ dependencies = [
     "pymysql>=1.1.1",
     "python-dotenv>=1.1.1",
     "reflex>=0.8.3",
+    "rosu-pp-py>=3.1.0",
     "scikit-learn>=1.8.0",
     "scipy>=1.16.0",
     "torch>=2.7.1",
+    "torchdr>=0.3",
     "tqdm>=4.67.1",
+    "umap-learn>=0.5.11",
     "zstandard>=0.25.0",
 ]
 

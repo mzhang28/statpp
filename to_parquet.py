@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, text
 from ossapi import Ossapi  # pip install ossapi
 from dotenv import load_dotenv
 from scipy.interpolate import PchipInterpolator
+import rosu_pp_py as rosu
 
 load_dotenv()
 
@@ -42,41 +43,51 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ------------------------------------------------------------------
 
 
-def parse_mods_strict(json_bytes):
+def parse_score_data(json_bytes):
+    """
+    Parses the JSON blob to extract valid mods, total multiplier,
+    and the miss count from statistics.
+    """
     try:
         data = orjson.loads(json_bytes)
     except:
-        return None, 1.0
+        return None, 1.0, 0
 
+    # --- Mod Parsing ---
     mods_list = data.get('mods', [])
-    if not mods_list:
-        return "", 1.0
-
     out_mods = set()
     total_multiplier = 1.0
 
-    for m in mods_list:
-        acr = m['acronym']
-        if acr in ALLOWED_SIMPLE:
-            if acr == "CL":
-                continue
-            out_mods.add(acr)
-            total_multiplier *= MOD_MULTIPLIERS.get(acr, 1.0)
-        elif acr in ALLOWED_SPEEDS:
-            settings = m.get('settings', {})
-            speed = settings.get('speed_change', ALLOWED_SPEEDS[acr])
-            if abs(speed - ALLOWED_SPEEDS[acr]) < 0.01:
-                norm_acr = 'DT' if acr == 'NC' else (
-                    'HT' if acr == 'DC' else acr)
-                if norm_acr not in out_mods:
-                    out_mods.add(norm_acr)
-                    total_multiplier *= MOD_MULTIPLIERS.get(norm_acr, 1.0)
+    if mods_list:
+        for m in mods_list:
+            acr = m['acronym']
+            if acr in ALLOWED_SIMPLE:
+                if acr == "CL":
+                    continue
+                out_mods.add(acr)
+                total_multiplier *= MOD_MULTIPLIERS.get(acr, 1.0)
+            elif acr in ALLOWED_SPEEDS:
+                settings = m.get('settings', {})
+                speed = settings.get('speed_change', ALLOWED_SPEEDS[acr])
+                if abs(speed - ALLOWED_SPEEDS[acr]) < 0.01:
+                    norm_acr = 'DT' if acr == 'NC' else (
+                        'HT' if acr == 'DC' else acr)
+                    if norm_acr not in out_mods:
+                        out_mods.add(norm_acr)
+                        total_multiplier *= MOD_MULTIPLIERS.get(norm_acr, 1.0)
+                else:
+                    return None, 1.0, 0
             else:
-                return None, 1.0
-        else:
-            return None, 1.0
+                return None, 1.0, 0
 
-    return ",".join(sorted(list(out_mods))), total_multiplier
+    mods_str = ",".join(sorted(list(out_mods))) if out_mods else ""
+
+    # --- Statistics Parsing ---
+    stats = data.get('statistics', {})
+    # Modern osu! score JSON usually uses 'miss'
+    miss_count = stats.get('miss', 0)
+
+    return mods_str, total_multiplier, miss_count
 
 
 def fetch_map_metadata(engine, beatmap_ids):
@@ -169,7 +180,7 @@ def fetch_user_metadata_robust(user_ids):
     return {int(k): v for k, v in cache.items()}
 
 # ------------------------------------------------------------------
-# NEW: SPLINE NORMALIZATION
+# SPLINE NORMALIZATION
 # ------------------------------------------------------------------
 
 
@@ -178,52 +189,28 @@ def fit_and_transform_spline(df_pandas):
     Applied per map-group. Fits a PCHIP spline to the score distribution
     and replaces 'score_norm' with the percentile rank.
     """
-    # 1. Get raw scores
     scores = df_pandas["score_norm"].values
-
-    # 2. Compute Empirical CDF (Quantiles)
-    # We want Unique scores to map to their Cumulative Frequency
     unique_scores, inverse_indices = np.unique(scores, return_inverse=True)
 
-    # If map has too few data points, return simple linear rank or raw
     if len(unique_scores) < 3:
-        # Fallback: simple rank normalized
         return (scores - scores.min()) / (scores.max() - scores.min() + 1e-9)
 
-    # Calculate percentile for each unique score
-    # We use 'searchsorted' to find how many scores are <= current score
-    # Ideally, we want the "end" of the step, so side='right'
-    counts = np.searchsorted(scores, unique_scores, side='right')
-    # Use explicit sorting if searchsorted assumes sorted input (it requires it)
-    # Since we have raw unique_scores which are sorted, and we need counts in 'scores'
-    # Easier: Just sort all scores first
-
     sorted_all = np.sort(scores)
-    # Ranks: position in the sorted array / total N
-    # For unique values, we take the LAST position (cumulative count)
     cumulative_counts = np.searchsorted(
         sorted_all, unique_scores, side='right')
     percentiles = cumulative_counts / len(scores)
 
-    # 3. Add Anchors (0.0 -> 0.0 and 1.0 -> 1.0) for stability
-    # This ensures a score of 0 is always 0% and max possible is 100%
     x_points = np.concatenate(([0.0], unique_scores, [1.0]))
     y_points = np.concatenate(([0.0], percentiles, [1.0]))
 
-    # Handle duplicates in anchors (if unique_scores contained 0.0 or 1.0)
     x_points, unique_indices = np.unique(x_points, return_index=True)
     y_points = y_points[unique_indices]
 
-    # 4. Fit Spline
-    # PchipInterpolator guarantees monotonicity (no dips)
     try:
         spline = PchipInterpolator(x_points, y_points)
         transformed_scores = spline(scores)
-
-        # Clip just in case of float errors
         return np.clip(transformed_scores, 0.0, 1.0).astype(np.float32)
     except Exception:
-        # Fallback if fit fails
         return scores
 
 
@@ -236,52 +223,25 @@ def apply_spline_normalization(output_dir):
         return
 
     print("Loading full dataset into memory (Polars)...")
-    # Load all columns. We need map_idx to group, score_norm to transform.
     df = pl.read_parquet(parquet_path)
 
     print(f"Loaded {len(df)} rows. Grouping by Map for Spline fitting...")
-
-    # We convert to pandas for the complex Apply, or iterate.
-    # Iterating over 100k groups in python is slow, but PCHIP is complex.
-    # Let's iterate on the unique map indices to save memory overhead of groupby objects
-
-    # OPTIMIZATION: Work in chunks of maps to avoid exploding RAM if we did a full groupby apply
-    # But for simplicity, we'll try a direct approach first.
-
     map_indices = df["map_idx"].unique().to_list()
-
-    # We will build a new Score column
-    # To do this efficiently, we sort the DF by map_idx first
     df = df.sort(["map_idx"])
-
-    # Convert to pandas for mutation
     pdf = df.to_pandas()
 
     new_scores = np.zeros(len(pdf), dtype=np.float32)
-
-    # We iterate over the slices manually
-    # Since it's sorted, we can find start/end indices
     print(f"Processing splines for {len(map_indices)} maps...")
 
-    # Extract map_idx column as numpy array for fast indexing
     map_idx_arr = pdf["map_idx"].values
-
-    # Find change points (where map_idx changes)
-    # This is much faster than df.groupby()
     change_indices = np.where(map_idx_arr[:-1] != map_idx_arr[1:])[0] + 1
     split_indices = np.concatenate(([0], change_indices, [len(pdf)]))
 
     for i in tqdm(range(len(split_indices) - 1), unit="map"):
         start = split_indices[i]
         end = split_indices[i+1]
-
-        # Slice the scores
         map_slice = pdf.iloc[start:end]
-
-        # Calculate Spline Scores
         transformed = fit_and_transform_spline(map_slice)
-
-        # Write back to the numpy array
         new_scores[start:end] = transformed
 
     print("Updating DataFrame...")
@@ -289,7 +249,7 @@ def apply_spline_normalization(output_dir):
 
     print("Saving transformed parquet...")
     final_df = pl.from_pandas(pdf)
-    final_df.write_parquet(parquet_path)  # Overwrite
+    final_df.write_parquet(parquet_path)
     print("Done! Scores have been transformed to Spline Percentiles.")
 
 # ------------------------------------------------------------------
@@ -314,6 +274,7 @@ def main():
     last_id = 0
 
     while True:
+        # Note: accuracy is already selected in the SQL
         query = text(f"""
             SELECT id, user_id, beatmap_id, accuracy, total_score, data
             FROM scores 
@@ -331,13 +292,15 @@ def main():
 
         last_id = chunk_pd['id'].iloc[-1]
 
+        # Use new parser that returns misses
         parsed = chunk_pd['data'].apply(
-            lambda x: parse_mods_strict(
+            lambda x: parse_score_data(
                 x.encode() if isinstance(x, str) else x)
         )
 
         chunk_pd['mods_str'] = [x[0] if x else None for x in parsed]
         chunk_pd['multiplier'] = [x[1] if x else 1.0 for x in parsed]
+        chunk_pd['miss_count'] = [x[2] if x else 0 for x in parsed]
 
         chunk_pd = chunk_pd.dropna(subset=['mods_str'])
 
@@ -349,11 +312,13 @@ def main():
             (chunk_pd['total_score'] / chunk_pd['multiplier']) / 1_000_000.0
         ).clip(0.0, 1.0)
 
+        # Added accuracy and miss_count to selection
         df = pl.from_pandas(chunk_pd).select([
             pl.col("user_id").cast(pl.Int32),
             pl.col("beatmap_id").cast(pl.Int32),
             pl.col("score_norm").cast(pl.Float32),
             pl.col("accuracy").cast(pl.Float32),
+            pl.col("miss_count").cast(pl.Int32),
             pl.col("mods_str")
         ])
 
@@ -366,11 +331,9 @@ def main():
     pbar.close()
 
     print("\n--- 3. Fetching Metadata ---")
-    # Collect IDs from parquet parts
     user_set = set()
     map_mod_set = set()
 
-    # Quick scan to get IDs
     print("Scanning parts for IDs...")
     for i in range(batch_idx):
         df_scan = pl.read_parquet(
@@ -381,8 +344,6 @@ def main():
         map_mod_set.update(pairs)
 
     username_map = fetch_user_metadata_robust(user_set)
-
-    # Extract unique map IDs for SQL query
     unique_map_ids = set([m[0] for m in map_mod_set])
     map_meta_map = fetch_map_metadata(engine, unique_map_ids)
 
@@ -441,7 +402,9 @@ def main():
         .join(m_map_df, on=["beatmap_id", "mods_str"], how="inner")
         .select([
             pl.col("user_idx"), pl.col("map_idx"),
-            pl.col("score_norm"), pl.col("accuracy"),
+            pl.col("score_norm"),
+            pl.col("accuracy"),    # Included
+            pl.col("miss_count"),  # Included
             pl.col("mods_str").alias("mods")
         ])
     )
@@ -456,6 +419,7 @@ def main():
             pass
 
     # --- STEP 5: SPLINE NORMALIZATION ---
+    # Note: Accuracy and misses are preserved but not modified by this step
     apply_spline_normalization(OUTPUT_DIR)
 
     print("\n--- Processing Complete ---")
