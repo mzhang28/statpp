@@ -1,0 +1,12 @@
+services:
+  db:
+    image: mariadb
+    volumes:
+      - ./docker-data/mariadb:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: osu
+      MYSQL_USER: osu
+      MYSQL_PASSWORD: osu
+    ports:
+      - "3306:3306"
