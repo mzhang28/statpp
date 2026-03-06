@@ -3,9 +3,17 @@ name = "statpp"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
+    "mysql>=0.0.3",
+    "mysql-connector-python>=9.6.0",
+    "orjson>=3.11.7",
+    "pandas>=3.0.1",
+    "polars>=1.38.1",
     "pony>=0.7.19",
+    "pyarrow>=23.0.1",
+    "pymysql>=1.1.2",
     "python-dotenv>=1.2.1",
+    "sqlalchemy>=2.0.48",
     "tqdm>=4.67.2",
 ]

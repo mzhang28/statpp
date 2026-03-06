@@ -9,3 +9,4 @@ prefect-data/
 training_data/user_metadata_cache.json
 source-data/
 !source-data/.gitkeep
+training_data
