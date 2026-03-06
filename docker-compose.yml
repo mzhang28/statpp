@@ -3,6 +3,7 @@ services:
     image: mariadb
     volumes:
       - ./docker-data/mariadb:/var/lib/mysql
+      - ./my.cnf:/etc/mysql/conf.d/buffer.cnf:ro
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: osu
