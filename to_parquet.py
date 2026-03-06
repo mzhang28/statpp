@@ -1,9 +1,8 @@
-# extract from the db and write to a parquet file
-
 import os
 from multiprocessing import Pool, cpu_count
 
 import orjson
+import numpy as np
 import pandas as pd
 import polars as pl
 from dotenv import load_dotenv
@@ -13,19 +12,12 @@ from tqdm import tqdm
 load_dotenv()
 
 DB_URI = "mysql+mysqlconnector://root:root@127.0.0.1:3306/osu"
-OUTPUT_DIR = "./training_data"
+OUTPUT_DIR = "./training-data"
 BATCH_SIZE = 100000
 
 MOD_MULTS = {
-    "NF": 1.0,
-    "EZ": 0.5,
-    "HT": 0.3,
-    "HD": 1.06,
-    "HR": 1.10,
-    "DT": 1.20,
-    "NC": 1.20,
-    "FL": 1.12,
-    "SO": 0.9,
+    "NF": 1.0, "EZ": 0.5, "HT": 0.3, "HD": 1.06, "HR": 1.10,
+    "DT": 1.20, "NC": 1.20, "FL": 1.12, "SO": 0.9,
 }
 SIMPLE_MODS = {"HR", "HD", "FL", "NF", "EZ", "CL", "SO"}
 SPEED_MODS = {"DT": 1.5, "NC": 1.5, "HT": 0.75, "DC": 0.75}
@@ -77,7 +69,7 @@ def main():
 
     while True:
         q = text(f"""
-            SELECT id, user_id, beatmap_id, accuracy, total_score, data
+            SELECT id, user_id, beatmap_id, accuracy, total_score, pp, data
             FROM scores WHERE ruleset_id = 0 AND id > {last_id}
             ORDER BY id ASC LIMIT {BATCH_SIZE}
         """)
@@ -96,16 +88,16 @@ def main():
             chunk["score_norm"] = (
                 chunk["total_score"] / chunk["multiplier"] / 1_000_000
             ).clip(0.0, 1.0)
-            pl.from_pandas(chunk).select(
-                [
-                    pl.col("user_id").cast(pl.Int32),
-                    pl.col("beatmap_id").cast(pl.Int32),
-                    pl.col("score_norm").cast(pl.Float32),
-                    pl.col("accuracy").cast(pl.Float32),
-                    pl.col("miss_count").cast(pl.Int32),
-                    pl.col("mods"),
-                ]
-            ).write_parquet(f"{OUTPUT_DIR}/part_{batch_idx}.parquet")
+            chunk["pp"] = chunk["pp"].fillna(0.0)
+            pl.from_pandas(chunk).select([
+                pl.col("user_id").cast(pl.Int32),
+                pl.col("beatmap_id").cast(pl.Int32),
+                pl.col("score_norm").cast(pl.Float32),
+                pl.col("accuracy").cast(pl.Float32),
+                pl.col("miss_count").cast(pl.Int32),
+                pl.col("pp").cast(pl.Float32),
+                pl.col("mods"),
+            ]).write_parquet(f"{OUTPUT_DIR}/part_{batch_idx}.parquet")
             batch_idx += 1
 
         pbar.update(len(chunk))
@@ -115,13 +107,38 @@ def main():
     pool.join()
 
     print("consolidating")
-    df = pl.scan_parquet(f"{OUTPUT_DIR}/part_*.parquet")
-    df.sink_parquet(f"{OUTPUT_DIR}/scores.parquet")
+    df = pl.scan_parquet(f"{OUTPUT_DIR}/part_*.parquet").collect()
+
+    # sequential indexing
+    print("building indices")
+    users = df["user_id"].unique().sort()
+    maps = df.select(["beatmap_id", "mods"]).unique().sort(
+        ["beatmap_id", "mods"])
+
+    user_map = pl.DataFrame(
+        {"user_id": users, "user_idx": np.arange(len(users), dtype=np.int32)})
+    map_map = maps.with_columns(
+        pl.Series("map_idx", np.arange(len(maps), dtype=np.int32)))
+
+    print(f"{len(user_map)} users, {len(map_map)} maps")
+
+    df = df.join(user_map, on="user_id").join(
+        map_map, on=["beatmap_id", "mods"])
+
+    # join usernames from sample_users
+    print("joining usernames")
+    engine2 = create_engine(DB_URI)
+    usernames = pl.from_pandas(pd.read_sql(
+        text("SELECT user_id, username FROM sample_users"), engine2))
+    usernames = usernames.cast({"user_id": pl.Int32})
+    df = df.join(usernames, on="user_id", how="left")
+
+    df.write_parquet(f"{OUTPUT_DIR}/scores.parquet")
 
     for i in range(batch_idx):
         os.remove(f"{OUTPUT_DIR}/part_{i}.parquet")
 
-    print("done")
+    print(f"done: {len(df)} rows")
 
 
 if __name__ == "__main__":

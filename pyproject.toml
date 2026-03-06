@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "implicit>=0.7.2",
+    "matplotlib>=3.10.8",
     "mysql>=0.0.3",
     "mysql-connector-python>=9.6.0",
     "orjson>=3.11.7",
@@ -14,6 +16,8 @@ dependencies = [
     "pyarrow>=23.0.1",
     "pymysql>=1.1.2",
     "python-dotenv>=1.2.1",
+    "scipy>=1.17.1",
     "sqlalchemy>=2.0.48",
+    "torch>=2.10.0",
     "tqdm>=4.67.2",
 ]
