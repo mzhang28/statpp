@@ -8,3 +8,10 @@ we need both the maps, which will be used for running through the existing pp al
    - obviously replace with ur specific details
    - `pv /path/to/2026_01_01_osu_files.tar | tar -C source-data -xzf -`
    - `pv /path/to/2026_01_01_performance_osu_top_10000.tar | pbzip2 -dc | tar -C source-data -xzOf - | mysql -uroot -proot -h127.0.0.1 --port 3306 osu`
+
+## Dev log
+
+Fuck i haven't really been keeping track very well
+
+Latest version is `iter_novelty.py` and `iter_novelty_analysis.py`.
+- the "novelty" part is to get rid of scores that are too similar to discourage lb farmers
