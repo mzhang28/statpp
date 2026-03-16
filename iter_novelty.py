@@ -19,6 +19,9 @@ BATCH = 65536
 W_CLAMP = 100.0
 ALPHA_COV = 1.0
 MAX_PLAYS_NOVELTY = 200
+NOVELTY_INTERVAL = 3
+SHRINKAGE_N0 = 50.0
+RELEVANCE_TEMP = 5.0
 DEVICE = "mps" if torch.backends.mps.is_available() else (
     "cuda" if torch.cuda.is_available() else "cpu")
 SQRT2 = math.sqrt(2.0)
@@ -59,13 +62,17 @@ map_counts = torch.zeros(n_maps, dtype=torch.float32, device=DEVICE)
 map_counts.scatter_add_(0, m_t, torch.ones(
     n_plays, dtype=torch.float32, device=DEVICE))
 
-# per-user play lists (numpy, for novelty computation)
+user_counts = torch.zeros(n_users, dtype=torch.float32, device=DEVICE)
+user_counts.scatter_add_(0, u_t, torch.ones(
+    n_plays, dtype=torch.float32, device=DEVICE))
+
+# per-user play lists (vectorized)
 print("building per-user play lists")
-user_play_indices = [[] for _ in range(n_users)]
-for k, ui in enumerate(u_inv):
-    user_play_indices[ui].append(k)
-user_play_indices = [np.array(lst, dtype=np.int64)
-                     for lst in user_play_indices]
+sort_order = np.argsort(u_inv)
+u_inv_sorted = u_inv[sort_order]
+boundaries = np.searchsorted(u_inv_sorted, np.arange(n_users + 1))
+user_play_indices = [sort_order[boundaries[i]:boundaries[i + 1]]
+                     for i in range(n_users)]
 
 # model
 bu = nn.Embedding(n_users, 1).to(DEVICE).float()
@@ -103,7 +110,6 @@ for uid, name in KNOWN.items():
 
 
 def compute_novelty_weights(logsurv_np, qi_np, m_inv_np):
-    """Returns novelty weight per play, computed sequentially per user."""
     novelty = np.ones(n_plays, dtype=np.float32)
     for i in tqdm(range(n_users), unit="user", desc="novelty", leave=False):
         pidxs = user_play_indices[i]
@@ -134,9 +140,14 @@ def compute_novelty_weights(logsurv_np, qi_np, m_inv_np):
     return novelty
 
 
+# volume-normalized weights for SGD
+vol_inv = 1.0 / user_counts[u_t]
+vol_inv = vol_inv / vol_inv.mean()
+
+
 def run_sgd(targets, n_epochs, lr, weights=None):
     opt = torch.optim.SGD(all_params, lr=lr, weight_decay=REG)
-    mu = targets.mean()
+    mu = targets.mean().detach()
     for epoch in range(n_epochs):
         perm = torch.randperm(n_plays, device=DEVICE)
         total_loss = 0.0
@@ -146,9 +157,11 @@ def run_sgd(targets, n_epochs, lr, weights=None):
             pred = mu + bu(u_b).squeeze() + bi(m_b).squeeze() + \
                 (pu(u_b) * qi(m_b)).sum(dim=1)
             err = (pred - r_b) ** 2
+            w = vol_inv[idx]
             if weights is not None:
-                err = err * weights[idx]
-            loss = err.mean()
+                w = w * weights[idx]
+            w = w / w.mean()
+            loss = (w * err).mean()
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -170,9 +183,9 @@ def print_rankings(label):
 
 # step 0: initial SVD on log(pp)
 print("\nstep 0: initial SVD on log(pp)")
+mu_global = log_pp.mean().detach()
 pbar = tqdm(range(INIT_EPOCHS), unit="epoch", desc="init")
 opt = torch.optim.SGD(all_params, lr=LR_INIT, weight_decay=REG)
-mu_global = log_pp.mean()
 for epoch in pbar:
     perm = torch.randperm(n_plays, device=DEVICE)
     total_loss = 0.0
@@ -181,7 +194,9 @@ for epoch in pbar:
         u_b, m_b, r_b = u_t[idx], m_t[idx], log_pp[idx]
         pred = mu_global + bu(u_b).squeeze() + \
             bi(m_b).squeeze() + (pu(u_b) * qi(m_b)).sum(dim=1)
-        loss = ((pred - r_b) ** 2).mean()
+        w = vol_inv[idx]
+        w = w / w.mean()
+        loss = (w * (pred - r_b) ** 2).mean()
         opt.zero_grad()
         loss.backward()
         opt.step()
@@ -191,15 +206,17 @@ for epoch in pbar:
 print_rankings("after init")
 
 # outer loop
-logsurv = torch.zeros(n_plays, dtype=torch.float32, device=DEVICE)
+logsurv = None
+novelty_t = torch.ones(n_plays, dtype=torch.float32, device=DEVICE)
 map_sigma = torch.ones(n_maps, dtype=torch.float32, device=DEVICE)
-m_inv_np = m_inv  # numpy, for novelty
+m_inv_np = m_inv
 
 pbar = tqdm(range(OUTER_ITERS), unit="outer")
 for outer in pbar:
     with torch.no_grad():
-        # A: relevance weights
-        w = (pu(u_t) * qi(m_t)).sum(dim=1).exp().clamp(max=W_CLAMP)
+        # A: relevance weights (sharpened)
+        w = (RELEVANCE_TEMP * (pu(u_t) * qi(m_t)).sum(dim=1)
+             ).exp().clamp(max=W_CLAMP)
 
         # B: weighted distribution fit per item
         w_sum = torch.zeros(n_maps, dtype=torch.float32, device=DEVICE)
@@ -216,14 +233,26 @@ for outer in pbar:
         # C: log-survival
         z = resid / map_sigma[m_t]
         erfc_val = torch.erfc(z / SQRT2).clamp(min=1e-30)
-        prev_logsurv = logsurv.clone()
-        logsurv = -(erfc_val / 2.0).log()
+        new_logsurv = -(erfc_val / 2.0).log()
 
-    # novelty weights (cpu, sequential)
-    logsurv_np = logsurv.cpu().numpy()
-    qi_np = qi.weight.detach().cpu().numpy()
-    novelty_np = compute_novelty_weights(logsurv_np, qi_np, m_inv_np)
-    novelty_t = torch.tensor(novelty_np, dtype=torch.float32, device=DEVICE)
+        # confidence shrinkage
+        alpha = map_counts[m_t] / (map_counts[m_t] + SHRINKAGE_N0)
+        global_mean_ls = new_logsurv.mean()
+        new_logsurv = alpha * new_logsurv + (1.0 - alpha) * global_mean_ls
+
+        if logsurv is not None:
+            delta = (new_logsurv - logsurv).abs().max().item()
+        else:
+            delta = float("inf")
+        logsurv = new_logsurv
+
+    # novelty weights (recompute every NOVELTY_INTERVAL iterations)
+    if outer % NOVELTY_INTERVAL == 0:
+        logsurv_np = logsurv.cpu().numpy()
+        qi_np = qi.weight.detach().cpu().numpy()
+        novelty_np = compute_novelty_weights(logsurv_np, qi_np, m_inv_np)
+        novelty_t = torch.tensor(
+            novelty_np, dtype=torch.float32, device=DEVICE)
 
     # combined weights: sigma * novelty, normalized to mean 1
     play_w = map_sigma[m_t] * novelty_t
@@ -233,7 +262,6 @@ for outer in pbar:
     mu_ls, final_mse = run_sgd(
         logsurv, INNER_EPOCHS, LR_REFINE, weights=play_w)
 
-    delta = (logsurv - prev_logsurv).abs().max().item()
     sigma_np = map_sigma.cpu().numpy()
 
     known_str = []
@@ -242,21 +270,87 @@ for outer in pbar:
         r = int((bu_np > bu_np[li]).sum()) + 1
         known_str.append(f"{name}=#{r}({bu_np[li]:.2f})")
 
-    nov_mean = novelty_np.mean()
+    nov_mean = novelty_t.mean().item()
     pbar.set_postfix_str(
         f"d={delta:.2f} mse={final_mse:.4f} σ={sigma_np.mean():.3f}±{sigma_np.std():.3f} nov={nov_mean:.3f} | {' '.join(known_str)}"
     )
 
 print_rankings("final")
 
+# --- post-hoc analysis ---
+bu_np = bu.weight.detach().cpu().numpy().flatten()
+pu_np = pu.weight.detach().cpu().numpy()
+qi_np = qi.weight.detach().cpu().numpy()
+
+# 4. Mahalanobis ranking
+print("\n--- Mahalanobis ranking ---")
+Sigma = np.cov(pu_np.T)
+Sigma_inv = np.linalg.inv(Sigma + 1e-6 * np.eye(N_FACTORS))
+mahal_scores = np.array([pu_np[i] @ Sigma_inv @ pu_np[i]
+                        for i in range(n_users)])
+mahal_sqrt = np.sqrt(mahal_scores)
+bu_z = (bu_np - bu_np.mean()) / (bu_np.std() + 1e-9)
+mahal_z = (mahal_sqrt - mahal_sqrt.mean()) / (mahal_sqrt.std() + 1e-9)
+combined = bu_z + mahal_z
+ranking_m = np.argsort(-combined)
+
+print("top 10 by bu + mahal:")
+for r, li in enumerate(ranking_m[:10]):
+    print(
+        f"  #{r+1} {get_name(li)} combined={combined[li]:.4f} bu={bu_np[li]:.4f} mahal={mahal_scores[li]:.4f}")
+print("known players:")
+for name, li in known_locals.items():
+    r = int((combined > combined[li]).sum()) + 1
+    print(
+        f"  {name}: #{r}/{n_users} combined={combined[li]:.4f} bu={bu_np[li]:.4f} mahal={mahal_scores[li]:.4f}")
+
+# 5. Dimension inspection via PCA of user factors
+print("\n--- Dimension inspection ---")
+eigvals, eigvecs = np.linalg.eigh(Sigma)
+order = np.argsort(-eigvals)
+eigvals, eigvecs = eigvals[order], eigvecs[:, order]
+
+map_info = df[["map_idx", "beatmap_id", "mods"]
+              ].drop_duplicates().set_index("map_idx")
+mid_to_local = {mid: i for i, mid in enumerate(mids)}
+
+for d in range(min(5, N_FACTORS)):
+    ev = eigvecs[:, d]
+    map_proj = qi_np @ ev
+    top_maps = np.argsort(-map_proj)[:10]
+    bot_maps = np.argsort(map_proj)[:10]
+    print(f"\neigenvector {d} (variance={eigvals[d]:.4f}):")
+    print("  top maps:", end="")
+    for mi in top_maps:
+        midx = mids[mi]
+        bid = int(map_info.loc[midx, "beatmap_id"]
+                  ) if midx in map_info.index else "?"
+        mods = map_info.loc[midx, "mods"] if midx in map_info.index else ""
+        print(f" {bid}+{mods}({map_proj[mi]:.3f})", end="")
+    print()
+    print("  bot maps:", end="")
+    for mi in bot_maps:
+        midx = mids[mi]
+        bid = int(map_info.loc[midx, "beatmap_id"]
+                  ) if midx in map_info.index else "?"
+        mods = map_info.loc[midx, "mods"] if midx in map_info.index else ""
+        print(f" {bid}+{mods}({map_proj[mi]:.3f})", end="")
+    print()
+
+print("\nknown player projections onto eigenvectors:")
+header = f"{'name':<12}" + \
+    "".join(f"{'pc'+str(d):>8}" for d in range(min(5, N_FACTORS)))
+print(header)
+for name, li in known_locals.items():
+    proj = pu_np[li] @ eigvecs[:, :5]
+    vals = "".join(f"{p:>8.3f}" for p in proj)
+    print(f"{name:<12}{vals}")
+
 np.savez_compressed(
     f"{OUTPUT}/itersvd_novelty.npz",
-    bu=bu.weight.detach().cpu().numpy().flatten(),
-    bi=bi.weight.detach().cpu().numpy().flatten(),
-    pu=pu.weight.detach().cpu().numpy(),
-    qi=qi.weight.detach().cpu().numpy(),
-    map_mu=map_mu.cpu().numpy(),
-    map_sigma=map_sigma.cpu().numpy(),
+    bu=bu_np, bi=bi.weight.detach().cpu().numpy().flatten(),
+    pu=pu_np, qi=qi_np,
+    map_mu=map_mu.cpu().numpy(), map_sigma=map_sigma.cpu().numpy(),
     uids=uids, mids=mids,
 )
-print("saved itersvd_novelty.npz")
+print("\nsaved itersvd_novelty.npz")
