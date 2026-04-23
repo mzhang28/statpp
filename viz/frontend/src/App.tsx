@@ -9,8 +9,8 @@ import {
   Outlet, 
   useParams
 } from '@tanstack/react-router';
-import { Users, Trophy, Sun, Moon, Monitor, Hash, ArrowLeft, Star } from 'lucide-react';
-import { getDimensions, getTopPlayers, getHardestBeatmaps, getBeatmap, getBeatmapScores } from './api';
+import { Users, Trophy, Sun, Moon, Monitor, Hash, ArrowLeft, Star, GitBranch, Clock, Info } from 'lucide-react';
+import { getDimensions, getTopPlayers, getHardestBeatmaps, getBeatmap, getBeatmapScores, getMeta } from './api';
 import type { Player, Beatmap, Score } from './api';
 import { cn } from './lib/utils';
 
@@ -108,10 +108,16 @@ declare module '@tanstack/react-router' {
 
 function Dashboard() {
   const [dim, setDim] = useState(0);
+  const [showDiff, setShowDiff] = useState(false);
   
   const { data: dimensions } = useQuery({
     queryKey: ['dimensions'],
     queryFn: getDimensions,
+  });
+
+  const { data: meta } = useQuery({
+    queryKey: ['meta'],
+    queryFn: getMeta,
   });
 
   const { data: players, isLoading: playersLoading } = useQuery({
@@ -129,10 +135,40 @@ function Dashboard() {
   return (
     <main className="max-w-7xl mx-auto px-6 py-10">
       <header className="mb-12">
-        <div className="flex flex-col gap-1 mb-8">
-          <h1 className="text-3xl font-bold tracking-tight">Dimensions Explorer</h1>
-          <p className="text-zinc-500 dark:text-zinc-400">Slice and dice n-dimensional rating data with sub-second precision.</p>
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-8">
+          <div className="flex flex-col gap-1">
+            <h1 className="text-3xl font-bold tracking-tight">Dimensions Explorer</h1>
+            <p className="text-zinc-500 dark:text-zinc-400">Slice and dice n-dimensional rating data with sub-second precision.</p>
+          </div>
+          
+          {meta && (
+            <div className="flex flex-wrap gap-4 text-[10px] font-mono text-zinc-400 border border-zinc-200 dark:border-zinc-800 rounded-lg px-3 py-2 bg-zinc-50/50 dark:bg-zinc-900/30">
+              <div className="flex items-center gap-1.5">
+                <Clock className="w-3 h-3" />
+                <span>{new Date(meta.timestamp).toLocaleString()}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <GitBranch className="w-3 h-3" />
+                <span title={meta.git_hash}>{meta.git_hash.slice(0, 7)}</span>
+              </div>
+              {meta.git_diff && meta.git_diff.trim().length > 0 && (
+                <button 
+                  onClick={() => setShowDiff(!showDiff)}
+                  className="flex items-center gap-1.5 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors"
+                >
+                  <Info className="w-3 h-3" />
+                  <span>{showDiff ? 'Hide Diff' : 'Show Diff'}</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
+
+        {showDiff && meta?.git_diff && (
+          <div className="mb-8 p-4 bg-zinc-900 text-zinc-300 rounded-lg overflow-x-auto text-[10px] font-mono leading-relaxed max-h-[300px] overflow-y-auto border border-zinc-800">
+            <pre>{meta.git_diff}</pre>
+          </div>
+        )}
         
         {dimensions !== undefined && (
           <div className="flex flex-wrap gap-2">

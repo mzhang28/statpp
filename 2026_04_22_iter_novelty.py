@@ -5,6 +5,8 @@ import polars as pl
 import torch
 import sqlite3
 import json
+import subprocess
+from datetime import datetime
 from torch import nn
 from tqdm import tqdm
 
@@ -398,6 +400,18 @@ c.execute("DROP TABLE IF EXISTS scores")
 
 c.execute("CREATE TABLE meta (key TEXT, value TEXT)")
 c.execute("INSERT INTO meta VALUES (?, ?)", ("dimensions", str(N_FACTORS)))
+
+# metadata for provenance
+try:
+    git_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+    git_diff = subprocess.check_output(["git", "diff", "HEAD"]).decode("utf-8")
+except Exception as e:
+    git_hash = "unknown"
+    git_diff = str(e)
+
+c.execute("INSERT INTO meta VALUES (?, ?)", ("timestamp", datetime.now().isoformat()))
+c.execute("INSERT INTO meta VALUES (?, ?)", ("git_hash", git_hash))
+c.execute("INSERT INTO meta VALUES (?, ?)", ("git_diff", git_diff))
 
 c.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, username TEXT, metadata TEXT)")
 for i in tqdm(range(n_users), desc="players"):

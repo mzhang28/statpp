@@ -81,6 +81,7 @@ async fn main() -> Result<()> {
     
     let state = Arc::new(AppState { db_path: args.database.clone() });
     let app = Router::new()
+        .route("/api/meta", get(get_meta))
         .route("/api/dimensions", get(get_dimensions))
         .route("/api/players/top", get(get_top_players))
         .route("/api/beatmaps/hardest", get(get_hardest_beatmaps))
@@ -115,6 +116,21 @@ async fn index_html() -> Response {
         Some(content) => Html(content.data).into_response(),
         None => (StatusCode::NOT_FOUND, "Index not found").into_response(),
     }
+}
+
+async fn get_meta(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let conn = Connection::open(&state.db_path).unwrap();
+    let mut stmt = conn.prepare("SELECT key, value FROM meta").unwrap();
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }).unwrap();
+
+    let mut meta = serde_json::Map::new();
+    for row in rows {
+        let (k, v) = row.unwrap();
+        meta.insert(k, serde_json::Value::String(v));
+    }
+    Json(meta)
 }
 
 async fn get_dimensions(State(state): State<Arc<AppState>>) -> impl IntoResponse {

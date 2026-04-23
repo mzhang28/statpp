@@ -41,6 +41,11 @@ export const getDimensions = async () => {
   return data.dimensions;
 };
 
+export const getMeta = async () => {
+  const { data } = await api.get<Record<string, string>>('/meta');
+  return data;
+};
+
 export const getTopPlayers = async (dim: number, limit = 50) => {
   const { data } = await api.get<Player[]>(`/players/top?dim=${dim}&limit=${limit}`);
   return data;
