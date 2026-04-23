@@ -105,6 +105,14 @@ def get_name(li):
     return "?"
 
 
+def get_user_id(li):
+    uidx = uids[li]
+    if uidx in user_info.index:
+        row = user_info.loc[uidx]
+        return int(row["user_id"])
+    return 0
+
+
 KNOWN = {7562902: "mrekk", 14715160: "toro",
          10549880: "ninerik", 9269034: "accolibed", 15406985: "ivaxa"}
 known_locals = {}
@@ -417,6 +425,7 @@ c.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, username TEXT, metadata
 for i in tqdm(range(n_users), desc="players"):
     username = get_name(i)
     meta_val = {
+        "user_id": get_user_id(i),
         "ratings": pu_np[i].tolist(),
         "bu": float(bu_np[i]),
         "skill": float(skill[i]),
@@ -439,6 +448,7 @@ for i in tqdm(range(n_maps), desc="maps"):
         "q": float(map_q[i])
     }
     c.execute("INSERT INTO beatmaps VALUES (?, ?, ?, ?, ?)", (i, "", str(bid), mods_str, json.dumps(meta_val)))
+
 
 c.execute("CREATE TABLE scores (player_id INTEGER, beatmap_id INTEGER, mod TEXT, metadata TEXT)")
 # sample or all? the spec doesn't say. but let's do all top contributions or similar if too many

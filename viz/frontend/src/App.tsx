@@ -9,8 +9,8 @@ import {
   Outlet, 
   useParams
 } from '@tanstack/react-router';
-import { Users, Trophy, Sun, Moon, Monitor, Hash, ArrowLeft, Star, GitBranch, Clock, Info } from 'lucide-react';
-import { getDimensions, getTopPlayers, getHardestBeatmaps, getBeatmap, getBeatmapScores, getMeta } from './api';
+import { Users, Trophy, Sun, Moon, Monitor, Hash, ArrowLeft, Star, GitBranch, Clock, Info, Search, X, ExternalLink } from 'lucide-react';
+import { getDimensions, getTopPlayers, getHardestBeatmaps, getBeatmap, getBeatmapScores, getMeta, searchPlayers, getPlayer, getPlayerScores } from './api';
 import type { Player, Beatmap, Score } from './api';
 import { cn } from './lib/utils';
 
@@ -95,7 +95,13 @@ const beatmapRoute = createRoute({
   component: BeatmapPage,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute, beatmapRoute]);
+const playerRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/player/$playerId',
+  component: PlayerPage,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, beatmapRoute, playerRoute]);
 const router = createRouter({ routeTree });
 
 declare module '@tanstack/react-router' {
@@ -109,6 +115,7 @@ declare module '@tanstack/react-router' {
 function Dashboard() {
   const [dim, setDim] = useState(0);
   const [showDiff, setShowDiff] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   
   const { data: dimensions } = useQuery({
     queryKey: ['dimensions'],
@@ -118,6 +125,12 @@ function Dashboard() {
   const { data: meta } = useQuery({
     queryKey: ['meta'],
     queryFn: getMeta,
+  });
+
+  const { data: searchResults, isLoading: searchLoading } = useQuery({
+    queryKey: ['players', 'search', searchQuery, dim],
+    queryFn: () => searchPlayers(searchQuery, dim),
+    enabled: searchQuery.length > 1,
   });
 
   const { data: players, isLoading: playersLoading } = useQuery({
@@ -192,31 +205,115 @@ function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
         <section className="space-y-4">
-          <div className="flex items-center gap-2 px-1">
-            <Users className="w-5 h-5 text-zinc-400" />
-            <h2 className="text-xl font-semibold">Top Players</h2>
+          <div className="flex items-center gap-2 px-1 justify-between">
+            <div className="flex items-center gap-2">
+              <Users className="w-5 h-5 text-zinc-400" />
+              <h2 className="text-xl font-semibold">Players</h2>
+            </div>
+            
+            <div className="relative group">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 group-focus-within:text-zinc-900 dark:group-focus-within:text-zinc-100 transition-colors" />
+              <input 
+                type="text"
+                placeholder="Search players..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 pr-9 py-1.5 rounded-full text-sm border border-zinc-200 dark:border-zinc-800 bg-transparent focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:focus:ring-zinc-100 focus:border-transparent transition-all w-48 focus:w-64"
+              />
+              {searchQuery && (
+                <button 
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
           </div>
           <div className="border border-zinc-200 dark:border-zinc-800 rounded-lg overflow-hidden bg-zinc-50/50 dark:bg-zinc-900/30">
             <table className="w-full text-sm text-left border-collapse">
               <thead>
                 <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-transparent">
+                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400 w-16">Rank</th>
                   <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Player</th>
                   <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400 text-right">Rating</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                {playersLoading ? (
+                {searchQuery.length > 1 ? (
+                  searchLoading ? (
+                    <tr className="animate-pulse">
+                      <td colSpan={3} className="px-4 py-4 h-12 bg-zinc-100/50 dark:bg-zinc-800/20" />
+                    </tr>
+                  ) : searchResults?.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-4 py-8 text-center text-zinc-500">No results found</td>
+                    </tr>
+                  ) : searchResults?.map((p: Player) => (
+                    <tr key={p.id} className="group hover:bg-white dark:hover:bg-zinc-800/40 transition-colors">
+                      <td className="px-4 py-3 font-mono text-zinc-400 text-xs">
+                        #{p.rank}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-between group/row">
+                          <Link 
+                            to="/player/$playerId" 
+                            params={{ playerId: p.id.toString() }}
+                            className="flex flex-col group/link"
+                          >
+                            <span className="font-semibold group-hover/link:underline">{p.username}</span>
+                            <span className="text-[10px] text-zinc-400 font-mono">ID: {p.id}</span>
+                          </Link>
+                          {p.metadata.user_id && (
+                            <a 
+                              href={`https://osu.ppy.sh/users/${p.metadata.user_id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="opacity-0 group-hover/row:opacity-100 p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-all"
+                              title="Open osu! profile"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right font-bold tabular-nums text-lg">
+                        {p.metadata.ratings[dim]?.toFixed(4)}
+                      </td>
+                    </tr>
+                  ))
+                ) : playersLoading ? (
                   [...Array(5)].map((_, i) => (
                     <tr key={i} className="animate-pulse">
-                      <td colSpan={2} className="px-4 py-4 h-12 bg-zinc-100/50 dark:bg-zinc-800/20" />
+                      <td colSpan={3} className="px-4 py-4 h-12 bg-zinc-100/50 dark:bg-zinc-800/20" />
                     </tr>
                   ))
                 ) : players?.map((p: Player) => (
                   <tr key={p.id} className="group hover:bg-white dark:hover:bg-zinc-800/40 transition-colors">
+                    <td className="px-4 py-3 font-mono text-zinc-400 text-xs">
+                      #{p.rank}
+                    </td>
                     <td className="px-4 py-3">
-                      <div className="flex flex-col">
-                        <span className="font-semibold">{p.username}</span>
-                        <span className="text-[10px] text-zinc-400 font-mono">ID: {p.id}</span>
+                      <div className="flex items-center justify-between group/row">
+                        <Link 
+                          to="/player/$playerId" 
+                          params={{ playerId: p.id.toString() }}
+                          className="flex flex-col group/link"
+                        >
+                          <span className="font-semibold group-hover/link:underline">{p.username}</span>
+                          <span className="text-[10px] text-zinc-400 font-mono">ID: {p.id}</span>
+                        </Link>
+                        {p.metadata.user_id && (
+                          <a 
+                            href={`https://osu.ppy.sh/users/${p.metadata.user_id}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="opacity-0 group-hover/row:opacity-100 p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-all"
+                            title="Open osu! profile"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        )}
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right font-bold tabular-nums text-lg">
@@ -252,16 +349,27 @@ function Dashboard() {
                 ) : beatmaps?.map((b: Beatmap) => (
                   <tr key={b.id} className="group hover:bg-white dark:hover:bg-zinc-800/40 transition-colors">
                     <td className="px-4 py-3">
-                      <Link 
-                        to="/beatmap/$beatmapId" 
-                        params={{ beatmapId: b.id.toString() }} 
-                        className="flex flex-col group/link"
-                      >
-                        <span className="font-semibold group-hover/link:underline">{b.title}</span>
-                        <span className="text-[10px] text-zinc-500">
-                          {b.artist} <span className="text-zinc-400 dark:text-zinc-600">//</span> {b.version}
-                        </span>
-                      </Link>
+                      <div className="flex items-center justify-between group/row">
+                        <Link 
+                          to="/beatmap/$beatmapId" 
+                          params={{ beatmapId: b.id.toString() }} 
+                          className="flex flex-col group/link"
+                        >
+                          <span className="font-semibold group-hover/link:underline">{b.title}</span>
+                          <span className="text-[10px] text-zinc-500">
+                            {b.artist} <span className="text-zinc-400 dark:text-zinc-600">//</span> {b.version}
+                          </span>
+                        </Link>
+                        <a 
+                          href={`https://osu.ppy.sh/beatmaps/${b.title}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="opacity-0 group-hover/row:opacity-100 p-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-all"
+                          title="Open on osu! website"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-right font-bold tabular-nums text-lg text-red-500/80 dark:text-red-400/80">
                       {b.metadata.difficulties[dim]?.toFixed(4)}
@@ -309,7 +417,18 @@ function BeatmapPage() {
       ) : beatmap && (
         <header className="mb-12">
           <div className="flex flex-col gap-1 mb-6">
-            <h1 className="text-4xl font-bold tracking-tight">{beatmap.title}</h1>
+            <div className="flex items-start justify-between">
+              <h1 className="text-4xl font-bold tracking-tight">{beatmap.title}</h1>
+              <a 
+                href={`https://osu.ppy.sh/beatmaps/${beatmap.title}`}
+                target="_blank"
+                rel="noreferrer"
+                className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-md text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+                title="Open on osu! website"
+              >
+                <ExternalLink className="w-5 h-5" />
+              </a>
+            </div>
             <p className="text-lg text-zinc-500">
               {beatmap.artist} <span className="text-zinc-300 dark:text-zinc-700 mx-2">/</span> {beatmap.version}
             </p>
@@ -374,10 +493,156 @@ function BeatmapPage() {
               ) : scores?.map((s: Score, idx: number) => (
                 <tr key={idx} className="group hover:bg-white dark:hover:bg-zinc-800/40 transition-colors">
                   <td className="px-4 py-3">
-                    <div className="flex flex-col">
-                      <span className="font-semibold">{s.player_username}</span>
+                    <Link 
+                      to="/player/$playerId" 
+                      params={{ playerId: s.player_id.toString() }}
+                      className="flex flex-col group/link"
+                    >
+                      <span className="font-semibold group-hover/link:underline">{s.player_username}</span>
                       <span className="text-[10px] text-zinc-400 font-mono">ID: {s.player_id}</span>
-                    </div>
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="px-1.5 py-0.5 rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 text-[10px] font-bold uppercase tabular-nums">
+                      {s.mod_str}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 font-bold tabular-nums text-blue-600 dark:text-blue-400">
+                    {s.metadata.scores[dim]?.toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3 text-right font-mono text-zinc-500">
+                    {(s.metadata.accuracy * 100).toFixed(2)}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function PlayerPage() {
+  const { playerId } = useParams({ from: '/player/$playerId' });
+  const [dim, setDim] = useState(0);
+
+  const { data: player, isLoading: playerLoading } = useQuery({
+    queryKey: ['player', playerId],
+    queryFn: () => getPlayer(parseInt(playerId)),
+  });
+
+  const { data: dimensions } = useQuery({
+    queryKey: ['dimensions'],
+    queryFn: getDimensions,
+  });
+
+  const { data: scores, isLoading: scoresLoading } = useQuery({
+    queryKey: ['player-scores', playerId, dim],
+    queryFn: () => getPlayerScores(parseInt(playerId), dim),
+    enabled: dimensions !== undefined,
+  });
+
+  return (
+    <main className="max-w-7xl mx-auto px-6 py-10">
+      <Link to="/" className="inline-flex items-center gap-2 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 mb-8 transition-colors group">
+        <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
+        <span className="text-sm font-medium">Back to Explorer</span>
+      </Link>
+
+      {playerLoading ? (
+        <div className="h-40 w-full bg-zinc-100 dark:bg-zinc-800 animate-pulse rounded-lg mb-12" />
+      ) : player && (
+        <header className="mb-12">
+          <div className="flex flex-col gap-1 mb-6">
+            <div className="flex items-start justify-between">
+              <h1 className="text-4xl font-bold tracking-tight">{player.username}</h1>
+              {player.metadata.user_id && (
+                <a 
+                  href={`https://osu.ppy.sh/users/${player.metadata.user_id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-md text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+                  title="Open osu! profile"
+                >
+                  <ExternalLink className="w-5 h-5" />
+                </a>
+              )}
+            </div>
+            <div className="flex gap-4 mt-2">
+              <span className="text-xs font-mono text-zinc-400">ID: {player.id}</span>
+              <span className="text-xs font-mono text-zinc-400">Skill: {player.metadata.skill?.toFixed(2)}</span>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+            {player.metadata.ratings.map((r: number, i: number) => (
+              <div key={i} className="bg-zinc-50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 px-3 py-2.5 rounded-md">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Dim {i}</div>
+                <div className="text-lg font-bold tabular-nums">{r.toFixed(3)}</div>
+              </div>
+            ))}
+          </div>
+        </header>
+      )}
+
+      <section className="space-y-6">
+        <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-4">
+          <div className="flex items-center gap-2">
+            <Trophy className="w-5 h-5 text-zinc-400" />
+            <h2 className="text-xl font-semibold">Top Scores</h2>
+          </div>
+
+          {dimensions !== undefined && (
+            <div className="flex gap-1">
+              {Array.from({ length: dimensions }).map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => setDim(i)}
+                  className={cn(
+                    "px-3 py-1 rounded-md text-xs font-medium transition-all",
+                    dim === i 
+                      ? "bg-zinc-900 dark:bg-zinc-100 text-white dark:text-black" 
+                      : "bg-zinc-100 dark:bg-zinc-800 text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+                  )}
+                >
+                  Dim {i}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="border border-zinc-200 dark:border-zinc-800 rounded-lg overflow-hidden bg-zinc-50/50 dark:bg-zinc-900/30">
+          <table className="w-full text-sm text-left border-collapse">
+            <thead>
+              <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-transparent">
+                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Beatmap</th>
+                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Mods</th>
+                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Score</th>
+                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400 text-right">Acc</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+              {scoresLoading ? (
+                [...Array(5)].map((_, i) => (
+                  <tr key={i} className="animate-pulse">
+                    <td colSpan={4} className="px-4 py-4 h-12 bg-zinc-100/50 dark:bg-zinc-800/20" />
+                  </tr>
+                ))
+              ) : scores?.map((s: Score, idx: number) => (
+                <tr key={idx} className="group hover:bg-white dark:hover:bg-zinc-800/40 transition-colors">
+                  <td className="px-4 py-3">
+                    <Link 
+                      to="/beatmap/$beatmapId" 
+                      params={{ beatmapId: s.beatmap_id.toString() }}
+                      className="flex flex-col group/link"
+                    >
+                      <span className="font-semibold group-hover/link:underline">{s.beatmap_title}</span>
+                      <span className="text-[10px] text-zinc-500">
+                        {s.beatmap_artist} <span className="text-zinc-400 dark:text-zinc-600">//</span> {s.beatmap_version}
+                      </span>
+                    </Link>
                   </td>
                   <td className="px-4 py-3">
                     <span className="px-1.5 py-0.5 rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 text-[10px] font-bold uppercase tabular-nums">

@@ -38,6 +38,8 @@ struct Player {
     id: i64,
     username: String,
     metadata: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rank: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -52,8 +54,11 @@ struct Beatmap {
 #[derive(Serialize, Deserialize)]
 struct Score {
     player_id: i64,
-    player_username: String,
+    player_username: Option<String>,
     beatmap_id: i64,
+    beatmap_title: Option<String>,
+    beatmap_artist: Option<String>,
+    beatmap_version: Option<String>,
     mod_str: String,
     metadata: serde_json::Value,
 }
@@ -62,6 +67,12 @@ struct Score {
 struct TopQuery {
     dim: usize,
     limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    dim: usize,
 }
 
 #[tokio::main]
@@ -78,12 +89,19 @@ async fn main() -> Result<()> {
         conn.execute(&format!("CREATE INDEX IF NOT EXISTS idx_beatmaps_dim_{} ON beatmaps (json_extract(metadata, '$.difficulties[{}]') DESC)", i, i), [])?;
         conn.execute(&format!("CREATE INDEX IF NOT EXISTS idx_scores_dim_{} ON scores (beatmap_id, json_extract(metadata, '$.scores[{}]') DESC)", i, i), [])?;
     }
+
+    // Initialize Full Text Search for players
+    conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS players_fts USING fts5(username, content='players', content_rowid='id')", [])?;
+    conn.execute("INSERT INTO players_fts(players_fts) VALUES('rebuild')", [])?;
     
     let state = Arc::new(AppState { db_path: args.database.clone() });
     let app = Router::new()
         .route("/api/meta", get(get_meta))
         .route("/api/dimensions", get(get_dimensions))
+        .route("/api/players/search", get(search_players))
         .route("/api/players/top", get(get_top_players))
+        .route("/api/players/:id", get(get_player))
+        .route("/api/players/:id/scores", get(get_player_scores))
         .route("/api/beatmaps/hardest", get(get_hardest_beatmaps))
         .route("/api/beatmaps/:id", get(get_beatmap))
         .route("/api/beatmaps/:id/scores", get(get_beatmap_scores))
@@ -154,6 +172,33 @@ async fn get_top_players(State(state): State<Arc<AppState>>, Query(query): Query
             id: row.get(0)?,
             username: row.get(1)?,
             metadata: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
+            rank: None, // We'll fill this in the next step
+        })
+    }).unwrap().map(|r| r.unwrap()).enumerate().map(|(i, mut p)| {
+        p.rank = Some(i + 1);
+        p
+    }).collect();
+    Json(players)
+}
+
+async fn search_players(State(state): State<Arc<AppState>>, Query(query): Query<SearchQuery>) -> impl IntoResponse {
+    let conn = Connection::open(&state.db_path).unwrap();
+    let q = format!("{}*", query.q);
+    // Use a subquery to find the rank for each player in the current dimension
+    let sql = format!(
+        "SELECT p.id, p.username, p.metadata, \
+         (SELECT count(*) + 1 FROM players p2 WHERE json_extract(p2.metadata, '$.ratings[{}]') > json_extract(p.metadata, '$.ratings[{}]')) as rank \
+         FROM players p JOIN players_fts f ON p.id = f.rowid \
+         WHERE players_fts MATCH ? ORDER BY rank LIMIT 20",
+        query.dim, query.dim
+    );
+    let mut stmt = conn.prepare(&sql).unwrap();
+    let players: Vec<Player> = stmt.query_map([q], |row| {
+        Ok(Player {
+            id: row.get(0)?,
+            username: row.get(1)?,
+            metadata: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
+            rank: Some(row.get::<_, usize>(3)?),
         })
     }).unwrap().map(|r| r.unwrap()).collect();
     Json(players)
@@ -192,6 +237,46 @@ async fn get_beatmap(State(state): State<Arc<AppState>>, Path(id): Path<i64>) ->
     }
 }
 
+async fn get_player(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> impl IntoResponse {
+    let conn = Connection::open(&state.db_path).unwrap();
+    let res: Result<Player, _> = conn.query_row("SELECT id, username, metadata FROM players WHERE id = ?", [id], |row| {
+        Ok(Player {
+            id: row.get(0)?,
+            username: row.get(1)?,
+            metadata: serde_json::from_str(&row.get::<_, String>(2)?).unwrap(),
+            rank: None,
+        })
+    });
+    match res {
+        Ok(p) => (StatusCode::OK, Json(p)).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "Not Found").into_response(),
+    }
+}
+
+async fn get_player_scores(State(state): State<Arc<AppState>>, Path(player_id): Path<i64>, Query(query): Query<TopQuery>) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(50);
+    let conn = Connection::open(&state.db_path).unwrap();
+    let mut stmt = conn.prepare(&format!(
+        "SELECT s.player_id, s.beatmap_id, b.title, b.artist, b.version, s.mod, s.metadata FROM scores s \
+         JOIN beatmaps b ON s.beatmap_id = b.id \
+         WHERE s.player_id = ? ORDER BY json_extract(s.metadata, '$.scores[{}]') DESC LIMIT ?",
+        query.dim
+    )).unwrap();
+    let scores: Vec<Score> = stmt.query_map(params![player_id, limit], |row| {
+        Ok(Score {
+            player_id: row.get(0)?,
+            player_username: None,
+            beatmap_id: row.get(1)?,
+            beatmap_title: Some(row.get(2)?),
+            beatmap_artist: Some(row.get(3)?),
+            beatmap_version: Some(row.get(4)?),
+            mod_str: row.get(5)?,
+            metadata: serde_json::from_str(&row.get::<_, String>(6)?).unwrap(),
+        })
+    }).unwrap().map(|r| r.unwrap()).collect();
+    Json(scores)
+}
+
 async fn get_beatmap_scores(State(state): State<Arc<AppState>>, Path(beatmap_id): Path<i64>, Query(query): Query<TopQuery>) -> impl IntoResponse {
     let limit = query.limit.unwrap_or(50);
     let conn = Connection::open(&state.db_path).unwrap();
@@ -204,8 +289,11 @@ async fn get_beatmap_scores(State(state): State<Arc<AppState>>, Path(beatmap_id)
     let scores: Vec<Score> = stmt.query_map(params![beatmap_id, limit], |row| {
         Ok(Score {
             player_id: row.get(0)?,
-            player_username: row.get(1)?,
+            player_username: Some(row.get(1)?),
             beatmap_id: row.get(2)?,
+            beatmap_title: None,
+            beatmap_artist: None,
+            beatmap_version: None,
             mod_str: row.get(3)?,
             metadata: serde_json::from_str(&row.get::<_, String>(4)?).unwrap(),
         })

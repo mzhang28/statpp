@@ -11,6 +11,7 @@ export interface Player {
     ratings: number[];
     [key: string]: any;
   };
+  rank?: number;
 }
 
 export interface Beatmap {
@@ -26,8 +27,11 @@ export interface Beatmap {
 
 export interface Score {
   player_id: number;
-  player_username: string;
+  player_username?: string;
   beatmap_id: number;
+  beatmap_title?: string;
+  beatmap_artist?: string;
+  beatmap_version?: string;
   mod_str: string;
   metadata: {
     scores: number[];
@@ -48,6 +52,21 @@ export const getMeta = async () => {
 
 export const getTopPlayers = async (dim: number, limit = 50) => {
   const { data } = await api.get<Player[]>(`/players/top?dim=${dim}&limit=${limit}`);
+  return data;
+};
+
+export const getPlayer = async (id: number) => {
+  const { data } = await api.get<Player>(`/players/${id}`);
+  return data;
+};
+
+export const getPlayerScores = async (playerId: number, dim: number, limit = 50) => {
+  const { data } = await api.get<Score[]>(`/players/${playerId}/scores?dim=${dim}&limit=${limit}`);
+  return data;
+};
+
+export const searchPlayers = async (q: string, dim: number) => {
+  const { data } = await api.get<Player[]>(`/players/search?q=${q}&dim=${dim}`);
   return data;
 };
 
