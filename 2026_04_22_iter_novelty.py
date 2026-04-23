@@ -7,6 +7,7 @@ import sqlite3
 import json
 import subprocess
 from datetime import datetime
+from osu_shit import get_beatmap_info
 from torch import nn
 from tqdm import tqdm
 
@@ -440,14 +441,32 @@ for i in tqdm(range(n_maps), desc="maps"):
     row = map_info.loc[midx] if midx in map_info.index else None
     bid = int(row["beatmap_id"]) if row is not None else 0
     mods_str = row["mods"] if row is not None else ""
+    
+    # Supplement with detailed beatmap info
+    osu_path = f"source-data/2026_01_01_osu_files/{bid}.osu"
+    try:
+        info = get_beatmap_info(osu_path, mods_str)
+        artist = info.get("artist", "")
+        title = info.get("title", "")
+        version = info.get("version", mods_str)
+    except Exception as e:
+        # Fallback if file missing or parse error
+        info = {}
+        artist = ""
+        title = str(bid)
+        version = mods_str
+
     meta_val = {
         "difficulties": qi_np[i].tolist(),
         "bi": float(bi.weight.detach().cpu().numpy().flatten()[i]),
         "mu": float(map_mu_np[i]),
         "sigma": float(map_sigma_np[i]),
-        "q": float(map_q[i])
+        "q": float(map_q[i]),
+        "osu_id": bid,
+        "mods": mods_str,
+        "info": info
     }
-    c.execute("INSERT INTO beatmaps VALUES (?, ?, ?, ?, ?)", (i, "", str(bid), mods_str, json.dumps(meta_val)))
+    c.execute("INSERT INTO beatmaps VALUES (?, ?, ?, ?, ?)", (i, artist, title, version, json.dumps(meta_val)))
 
 
 c.execute("CREATE TABLE scores (player_id INTEGER, beatmap_id INTEGER, mod TEXT, metadata TEXT)")
