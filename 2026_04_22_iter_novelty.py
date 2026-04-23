@@ -28,9 +28,15 @@ NOVELTY_INTERVAL = 3
 SHRINKAGE_N0 = 50.0
 RELEVANCE_TEMP = 5.0
 TOP_K = 50
-DEVICE = "mps" if torch.backends.mps.is_available() else (
-    "cuda" if torch.cuda.is_available() else "cpu")
 SQRT2 = math.sqrt(2.0)
+
+if torch.backends.mps.is_available():
+    DEVICE = "mps"
+elif torch.cuda.is_available():
+    DEVICE = "cuda"
+else:
+    raise Exception("not running this shit on cpu")
+
 
 # load
 print("loading")
@@ -133,24 +139,28 @@ def compute_novelty_weights(logsurv_np, qi_np, m_inv_np):
         order = np.argsort(-ls)
         if len(order) > MAX_PLAYS_NOVELTY:
             order = order[:MAX_PLAYS_NOVELTY]
-        c = np.zeros(N_FACTORS, dtype=np.float32)
-        for rank, oi in enumerate(order):
-            k = pidxs[oi]
-            phi = qi_np[m_inv_np[k]]
-            lk = ls[oi]
-            c_norm = np.linalg.norm(c)
-            if c_norm < 1e-12:
-                nov = 1.0
-            else:
-                phi_norm = np.linalg.norm(phi)
-                if phi_norm < 1e-12:
-                    nov = 1.0
-                else:
-                    cos = np.dot(c, phi) / (c_norm * phi_norm)
-                    cos = np.clip(cos, -1.0, 1.0)
-                    nov = (1.0 - cos) / 2.0
-            novelty[k] = nov
-            c += ALPHA_COV * lk * phi
+
+        global_idxs = pidxs[order]
+        phi_mat = qi_np[m_inv_np[global_idxs]]          # (K, N_FACTORS)
+        lk_vec = ls[order]                               # (K,)
+
+        # exclusive prefix sum: c[rank] = sum_{j<rank} ALPHA_COV * lk_j * phi_j
+        weighted = (ALPHA_COV * lk_vec[:, None] * phi_mat).astype(np.float32)
+        c_mat = np.empty_like(weighted)
+        c_mat[0] = 0.0
+        np.cumsum(weighted[:-1], axis=0, out=c_mat[1:])
+
+        c_norm = np.linalg.norm(c_mat, axis=1)          # (K,)
+        phi_norm = np.linalg.norm(phi_mat, axis=1)      # (K,)
+
+        nov = np.ones(len(order), dtype=np.float32)
+        valid = (c_norm >= 1e-12) & (phi_norm >= 1e-12)
+        if valid.any():
+            dots = (c_mat[valid] * phi_mat[valid]).sum(axis=1)
+            cos = np.clip(dots / (c_norm[valid] * phi_norm[valid]), -1.0, 1.0)
+            nov[valid] = (1.0 - cos) / 2.0
+
+        novelty[global_idxs] = nov
     return novelty
 
 
@@ -232,20 +242,33 @@ for outer in pbar:
         w = (RELEVANCE_TEMP * (pu(u_t) * qi(m_t)).sum(dim=1)
              ).exp().clamp(max=W_CLAMP)
 
-        # B: weighted distribution fit per item
+        # B: weighted sums per map (full, not leave-one-out yet)
         w_sum = torch.zeros(n_maps, dtype=torch.float32, device=DEVICE)
         w_sum.scatter_add_(0, m_t, w)
-        wlp_sum = torch.zeros(n_maps, dtype=torch.float32, device=DEVICE)
-        wlp_sum.scatter_add_(0, m_t, w * log_pp)
-        map_mu = wlp_sum / w_sum
+        wx_sum = torch.zeros(n_maps, dtype=torch.float32, device=DEVICE)
+        wx_sum.scatter_add_(0, m_t, w * log_pp)
+        wxx_sum = torch.zeros(n_maps, dtype=torch.float32, device=DEVICE)
+        wxx_sum.scatter_add_(0, m_t, w * log_pp * log_pp)
 
-        resid = log_pp - map_mu[m_t]
-        wvar_sum = torch.zeros(n_maps, dtype=torch.float32, device=DEVICE)
-        wvar_sum.scatter_add_(0, m_t, w * resid ** 2)
-        map_sigma = (wvar_sum / w_sum).sqrt().clamp(min=0.01)
+        # full-pool versions (kept for saving / logging / map_q computation)
+        map_mu = wx_sum / w_sum
+        map_var_full = wxx_sum / w_sum - map_mu ** 2
+        map_sigma = map_var_full.clamp(min=1e-6).sqrt().clamp(min=0.01)
 
-        # C: log-survival
-        z = resid / map_sigma[m_t]
+        # C: leave-one-out mu, sigma per play
+        w_k = w
+        # Heavy weights guard: cap per-play weight at 50% of map sum to prevent LOO blowup
+        w_k = torch.min(w_k, 0.5 * w_sum[m_t])
+
+        x_k = log_pp
+        denom_loo = (w_sum[m_t] - w_k).clamp(min=1e-6)
+        mu_loo = (wx_sum[m_t] - w_k * x_k) / denom_loo
+        var_loo = (wxx_sum[m_t] - w_k * x_k * x_k) / denom_loo - mu_loo ** 2
+        sigma_loo = var_loo.clamp(min=1e-6).sqrt().clamp(min=0.01)
+
+        # z-score and logsurv using LOO moments
+        resid_loo = x_k - mu_loo
+        z = resid_loo / sigma_loo
         erfc_val = torch.erfc(z / SQRT2).clamp(min=1e-30)
         new_logsurv = -(erfc_val / 2.0).log()
 
@@ -286,7 +309,7 @@ for outer in pbar:
 
     nov_mean = novelty_t.mean().item()
     pbar.set_postfix_str(
-        f"d={delta:.2f} mse={final_mse:.4f} σ={sigma_np.mean():.3f}±{sigma_np.std():.3f} nov={nov_mean:.3f} | {' '.join(known_str)}"
+        f"d={delta:.2f} mse={final_mse:.4f} σ={sigma_np.mean():.3f} nov={nov_mean:.3f} z_max={z.max().item():.1f} | {' '.join(known_str)}"
     )
 
 print_rankings("final")
@@ -300,8 +323,7 @@ qi_np = qi.weight.detach().cpu().numpy()
 print("\n--- Mahalanobis ranking ---")
 Sigma = np.cov(pu_np.T)
 Sigma_inv = np.linalg.inv(Sigma + 1e-6 * np.eye(N_FACTORS))
-mahal_scores = np.array([pu_np[i] @ Sigma_inv @ pu_np[i]
-                        for i in range(n_users)])
+mahal_scores = np.einsum('ij,jk,ik->i', pu_np, Sigma_inv, pu_np)
 mahal_sqrt = np.sqrt(mahal_scores)
 bu_z = (bu_np - bu_np.mean()) / (bu_np.std() + 1e-9)
 mahal_z = (mahal_sqrt - mahal_sqrt.mean()) / (mahal_sqrt.std() + 1e-9)
@@ -381,10 +403,7 @@ df["logsurv"] = logsurv_np
 
 # map quality = mean bu of players who played each map
 df["bu"] = bu_np[u_inv]
-map_q_series = df.groupby("local_m")["bu"].mean()
-map_q = np.zeros(n_maps)
-for lm, v in map_q_series.items():
-    map_q[lm] = v
+map_q = df.groupby("local_m")["bu"].mean().reindex(range(n_maps), fill_value=0.0).values
 df["map_q"] = map_q[m_inv]
 df["contribution"] = df["map_q"] * df["logsurv"]
 
@@ -412,75 +431,79 @@ c.execute("INSERT INTO meta VALUES (?, ?)", ("dimensions", str(N_FACTORS)))
 
 # metadata for provenance
 try:
-    git_hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
+    git_hash = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"]).decode("utf-8").strip()
     git_diff = subprocess.check_output(["git", "diff", "HEAD"]).decode("utf-8")
 except Exception as e:
     git_hash = "unknown"
     git_diff = str(e)
 
-c.execute("INSERT INTO meta VALUES (?, ?)", ("timestamp", datetime.now().isoformat()))
+c.execute("INSERT INTO meta VALUES (?, ?)",
+          ("timestamp", datetime.now().isoformat()))
 c.execute("INSERT INTO meta VALUES (?, ?)", ("git_hash", git_hash))
 c.execute("INSERT INTO meta VALUES (?, ?)", ("git_diff", git_diff))
 
-c.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, username TEXT, metadata TEXT)")
-for i in tqdm(range(n_users), desc="players"):
-    username = get_name(i)
-    meta_val = {
+c.execute(
+    "CREATE TABLE players (id INTEGER PRIMARY KEY, username TEXT, metadata TEXT)")
+player_rows = [
+    (i, get_name(i), json.dumps({
         "user_id": get_user_id(i),
         "ratings": pu_np[i].tolist(),
         "bu": float(bu_np[i]),
         "skill": float(skill[i]),
         "combined": float(combined[i]),
-        "mahal": float(mahal_scores[i])
-    }
-    c.execute("INSERT INTO players VALUES (?, ?, ?)", (i, username, json.dumps(meta_val)))
+        "mahal": float(mahal_scores[i]),
+    }))
+    for i in tqdm(range(n_users), desc="players")
+]
+c.executemany("INSERT INTO players VALUES (?, ?, ?)", player_rows)
 
 c.execute("CREATE TABLE beatmaps (id INTEGER PRIMARY KEY, artist TEXT, title TEXT, version TEXT, metadata TEXT)")
+bi_np = bi.weight.detach().cpu().numpy().flatten()
+beatmap_rows = []
 for i in tqdm(range(n_maps), desc="maps"):
     midx = mids[i]
     row = map_info.loc[midx] if midx in map_info.index else None
     bid = int(row["beatmap_id"]) if row is not None else 0
     mods_str = row["mods"] if row is not None else ""
-    
-    # Supplement with detailed beatmap info
+
     osu_path = f"source-data/2026_01_01_osu_files/{bid}.osu"
     try:
         info = get_beatmap_info(osu_path, mods_str)
-        artist = info.get("artist", "")
-        title = info.get("title", "")
-        version = info.get("version", mods_str)
-    except Exception as e:
-        # Fallback if file missing or parse error
+        metadata = info.get("metadata", {})
+        artist = metadata.get("artist", "")
+        title = metadata.get("title", "")
+        version = metadata.get("version", mods_str)
+    except Exception:
         info = {}
         artist = ""
         title = str(bid)
         version = mods_str
 
-    meta_val = {
+    beatmap_rows.append((i, artist, title, version, json.dumps({
         "difficulties": qi_np[i].tolist(),
-        "bi": float(bi.weight.detach().cpu().numpy().flatten()[i]),
+        "bi": float(bi_np[i]),
         "mu": float(map_mu_np[i]),
         "sigma": float(map_sigma_np[i]),
         "q": float(map_q[i]),
         "osu_id": bid,
         "mods": mods_str,
-        "info": info
-    }
-    c.execute("INSERT INTO beatmaps VALUES (?, ?, ?, ?, ?)", (i, artist, title, version, json.dumps(meta_val)))
+        "info": info,
+    })))
+c.executemany("INSERT INTO beatmaps VALUES (?, ?, ?, ?, ?)", beatmap_rows)
 
 
 c.execute("CREATE TABLE scores (player_id INTEGER, beatmap_id INTEGER, mod TEXT, metadata TEXT)")
-# sample or all? the spec doesn't say. but let's do all top contributions or similar if too many
-# actually, let's just do all for now if it fits, or top-k per player
+score_rows = []
 for lu, group in tqdm(df.groupby("local_u"), desc="scores"):
     top = group.nlargest(TOP_K, "contribution")
     for _, row in top.iterrows():
-        meta_val = {
+        score_rows.append((int(lu), int(row["local_m"]), row["mods"], json.dumps({
             "scores": [float(row["logsurv"]), float(row["contribution"])],
             "accuracy": float(row["accuracy"]),
-            "pp": float(row["pp"])
-        }
-        c.execute("INSERT INTO scores VALUES (?, ?, ?, ?)", (int(lu), int(row["local_m"]), row["mods"], json.dumps(meta_val)))
+            "pp": float(row["pp"]),
+        })))
+c.executemany("INSERT INTO scores VALUES (?, ?, ?, ?)", score_rows)
 
 conn.commit()
 conn.close()
