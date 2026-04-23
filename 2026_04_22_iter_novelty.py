@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import torch
+import sqlite3
+import json
 from torch import nn
 from tqdm import tqdm
 
@@ -22,6 +24,7 @@ MAX_PLAYS_NOVELTY = 200
 NOVELTY_INTERVAL = 3
 SHRINKAGE_N0 = 50.0
 RELEVANCE_TEMP = 5.0
+TOP_K = 50
 DEVICE = "mps" if torch.backends.mps.is_available() else (
     "cuda" if torch.cuda.is_available() else "cpu")
 SQRT2 = math.sqrt(2.0)
@@ -353,4 +356,89 @@ np.savez_compressed(
     map_mu=map_mu.cpu().numpy(), map_sigma=map_sigma.cpu().numpy(),
     uids=uids, mids=mids,
 )
-print("\nsaved itersvd_novelty.npz")
+print(f"\nsaved {OUTPUT}/itersvd_novelty.npz")
+
+# --- Additional analysis for DB ---
+print("\n--- calculating map quality and player skill ---")
+logsurv_np = logsurv.cpu().numpy()
+map_mu_np = map_mu.cpu().numpy()
+map_sigma_np = map_sigma.cpu().numpy()
+
+df["local_u"] = u_inv
+df["local_m"] = m_inv
+df["logsurv"] = logsurv_np
+
+# map quality = mean bu of players who played each map
+df["bu"] = bu_np[u_inv]
+map_q_series = df.groupby("local_m")["bu"].mean()
+map_q = np.zeros(n_maps)
+for lm, v in map_q_series.items():
+    map_q[lm] = v
+df["map_q"] = map_q[m_inv]
+df["contribution"] = df["map_q"] * df["logsurv"]
+
+# player skill: weighted mean of top-k contributions
+player_skills = {}
+for lu, group in tqdm(df.groupby("local_u"), desc="skill"):
+    top = group.nlargest(TOP_K, "contribution")
+    player_skills[lu] = top["contribution"].mean()
+skill = np.zeros(n_users)
+for lu, s in player_skills.items():
+    skill[lu] = s
+
+# --- SQLite output ---
+print("\n--- exporting to statpp.db ---")
+conn = sqlite3.connect("statpp.db")
+c = conn.cursor()
+
+c.execute("DROP TABLE IF EXISTS meta")
+c.execute("DROP TABLE IF EXISTS players")
+c.execute("DROP TABLE IF EXISTS beatmaps")
+c.execute("DROP TABLE IF EXISTS scores")
+
+c.execute("CREATE TABLE meta (key TEXT, value TEXT)")
+c.execute("INSERT INTO meta VALUES (?, ?)", ("dimensions", str(N_FACTORS)))
+
+c.execute("CREATE TABLE players (id INTEGER PRIMARY KEY, username TEXT, metadata TEXT)")
+for i in tqdm(range(n_users), desc="players"):
+    username = get_name(i)
+    meta_val = {
+        "ratings": pu_np[i].tolist(),
+        "bu": float(bu_np[i]),
+        "skill": float(skill[i]),
+        "combined": float(combined[i]),
+        "mahal": float(mahal_scores[i])
+    }
+    c.execute("INSERT INTO players VALUES (?, ?, ?)", (i, username, json.dumps(meta_val)))
+
+c.execute("CREATE TABLE beatmaps (id INTEGER PRIMARY KEY, artist TEXT, title TEXT, version TEXT, metadata TEXT)")
+for i in tqdm(range(n_maps), desc="maps"):
+    midx = mids[i]
+    row = map_info.loc[midx] if midx in map_info.index else None
+    bid = int(row["beatmap_id"]) if row is not None else 0
+    mods_str = row["mods"] if row is not None else ""
+    meta_val = {
+        "difficulties": qi_np[i].tolist(),
+        "bi": float(bi.weight.detach().cpu().numpy().flatten()[i]),
+        "mu": float(map_mu_np[i]),
+        "sigma": float(map_sigma_np[i]),
+        "q": float(map_q[i])
+    }
+    c.execute("INSERT INTO beatmaps VALUES (?, ?, ?, ?, ?)", (i, "", str(bid), mods_str, json.dumps(meta_val)))
+
+c.execute("CREATE TABLE scores (player_id INTEGER, beatmap_id INTEGER, mod TEXT, metadata TEXT)")
+# sample or all? the spec doesn't say. but let's do all top contributions or similar if too many
+# actually, let's just do all for now if it fits, or top-k per player
+for lu, group in tqdm(df.groupby("local_u"), desc="scores"):
+    top = group.nlargest(TOP_K, "contribution")
+    for _, row in top.iterrows():
+        meta_val = {
+            "scores": [float(row["logsurv"]), float(row["contribution"])],
+            "accuracy": float(row["accuracy"]),
+            "pp": float(row["pp"])
+        }
+        c.execute("INSERT INTO scores VALUES (?, ?, ?, ?)", (int(lu), int(row["local_m"]), row["mods"], json.dumps(meta_val)))
+
+conn.commit()
+conn.close()
+print("done: statpp.db generated")
