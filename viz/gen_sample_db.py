@@ -14,21 +14,19 @@ def gen_db(n=3):
     c.execute('CREATE TABLE meta (key TEXT, value TEXT)')
     c.execute('INSERT INTO meta VALUES (?, ?)', ('dimensions', str(n)))
     
-    c.execute('CREATE TABLE players (id INTEGER PRIMARY KEY, metadata TEXT)')
+    c.execute('CREATE TABLE players (id INTEGER PRIMARY KEY, username TEXT, metadata TEXT)')
     for i in range(100):
-        metadata = {
-            'ratings': [random.random() for _ in range(n)],
-            'username': f'player_{i}'
-        }
-        c.execute('INSERT INTO players VALUES (?, ?)', (i, json.dumps(metadata)))
+        username = f'player_{i}'
+        metadata = {'ratings': [random.random() for _ in range(n)]}
+        c.execute('INSERT INTO players VALUES (?, ?, ?)', (i, username, json.dumps(metadata)))
         
-    c.execute('CREATE TABLE beatmaps (id INTEGER PRIMARY KEY, metadata TEXT)')
+    c.execute('CREATE TABLE beatmaps (id INTEGER PRIMARY KEY, artist TEXT, title TEXT, version TEXT, metadata TEXT)')
     for i in range(50):
-        metadata = {
-            'difficulties': [random.random() * 10 for _ in range(n)],
-            'title': f'beatmap_{i}'
-        }
-        c.execute('INSERT INTO beatmaps VALUES (?, ?)', (i, json.dumps(metadata)))
+        artist = f'Artist {i % 5}'
+        title = f'Song Title {i}'
+        version = f'Difficulty {random.choice(["Easy", "Normal", "Hard", "Insane", "Expert"])}'
+        metadata = {'difficulties': [random.random() * 10 for _ in range(n)]}
+        c.execute('INSERT INTO beatmaps VALUES (?, ?, ?, ?, ?)', (i, artist, title, version, json.dumps(metadata)))
         
     c.execute('CREATE TABLE scores (player_id INTEGER, beatmap_id INTEGER, mod TEXT, metadata TEXT)')
     for i in range(1000):
@@ -45,4 +43,4 @@ def gen_db(n=3):
 
 if __name__ == '__main__':
     gen_db()
-    print("Sample database 'statpp.db' generated.")
+    print("Sample database 'statpp.db' generated with updated schema.")

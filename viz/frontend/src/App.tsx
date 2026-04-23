@@ -164,28 +164,27 @@ function Dashboard() {
             <table className="w-full text-sm text-left border-collapse">
               <thead>
                 <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-transparent">
-                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">ID</th>
-                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Rating</th>
-                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400 text-right">User</th>
+                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Player</th>
+                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400 text-right">Rating</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                 {playersLoading ? (
                   [...Array(5)].map((_, i) => (
                     <tr key={i} className="animate-pulse">
-                      <td colSpan={3} className="px-4 py-4 h-12 bg-zinc-100/50 dark:bg-zinc-800/20" />
+                      <td colSpan={2} className="px-4 py-4 h-12 bg-zinc-100/50 dark:bg-zinc-800/20" />
                     </tr>
                   ))
                 ) : players?.map((p: Player) => (
                   <tr key={p.id} className="group hover:bg-white dark:hover:bg-zinc-800/40 transition-colors">
-                    <td className="px-4 py-3 font-mono text-zinc-400 group-hover:text-zinc-900 dark:group-hover:text-zinc-100 transition-colors">{p.id}</td>
-                    <td className="px-4 py-3 font-semibold tabular-nums">
-                      {p.metadata.ratings[dim]?.toFixed(4)}
+                    <td className="px-4 py-3">
+                      <div className="flex flex-col">
+                        <span className="font-semibold">{p.username}</span>
+                        <span className="text-[10px] text-zinc-400 font-mono">ID: {p.id}</span>
+                      </div>
                     </td>
-                    <td className="px-4 py-3 text-right">
-                      <span className="text-xs text-zinc-400 font-mono truncate max-w-[120px] inline-block">
-                        {p.metadata.username}
-                      </span>
+                    <td className="px-4 py-3 text-right font-bold tabular-nums text-lg">
+                      {p.metadata.ratings[dim]?.toFixed(4)}
                     </td>
                   </tr>
                 ))}
@@ -203,32 +202,33 @@ function Dashboard() {
             <table className="w-full text-sm text-left border-collapse">
               <thead>
                 <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-transparent">
-                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">ID</th>
-                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Difficulty</th>
-                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400 text-right">Title</th>
+                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Beatmap</th>
+                  <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400 text-right">Difficulty</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
                 {beatmapsLoading ? (
                   [...Array(5)].map((_, i) => (
                     <tr key={i} className="animate-pulse">
-                      <td colSpan={3} className="px-4 py-4 h-12 bg-zinc-100/50 dark:bg-zinc-800/20" />
+                      <td colSpan={2} className="px-4 py-4 h-12 bg-zinc-100/50 dark:bg-zinc-800/20" />
                     </tr>
                   ))
                 ) : beatmaps?.map((b: Beatmap) => (
                   <tr key={b.id} className="group hover:bg-white dark:hover:bg-zinc-800/40 transition-colors">
-                    <td className="px-4 py-3 font-mono text-zinc-400 group-hover:text-zinc-900 dark:group-hover:text-zinc-100 transition-colors">
-                      <Link to="/beatmap/$beatmapId" params={{ beatmapId: b.id.toString() }} className="hover:underline">
-                        {b.id}
+                    <td className="px-4 py-3">
+                      <Link 
+                        to="/beatmap/$beatmapId" 
+                        params={{ beatmapId: b.id.toString() }} 
+                        className="flex flex-col group/link"
+                      >
+                        <span className="font-semibold group-hover/link:underline">{b.title}</span>
+                        <span className="text-[10px] text-zinc-500">
+                          {b.artist} <span className="text-zinc-400 dark:text-zinc-600">//</span> {b.version}
+                        </span>
                       </Link>
                     </td>
-                    <td className="px-4 py-3 font-semibold tabular-nums">
+                    <td className="px-4 py-3 text-right font-bold tabular-nums text-lg text-red-500/80 dark:text-red-400/80">
                       {b.metadata.difficulties[dim]?.toFixed(4)}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <Link to="/beatmap/$beatmapId" params={{ beatmapId: b.id.toString() }} className="text-xs text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 font-mono truncate max-w-[120px] inline-block transition-colors">
-                        {b.metadata.title}
-                      </Link>
                     </td>
                   </tr>
                 ))}
@@ -269,31 +269,33 @@ function BeatmapPage() {
       </Link>
 
       {beatmapLoading ? (
-        <div className="h-20 w-1/3 bg-zinc-100 dark:bg-zinc-800 animate-pulse rounded-lg mb-8" />
+        <div className="h-40 w-full bg-zinc-100 dark:bg-zinc-800 animate-pulse rounded-lg mb-12" />
       ) : beatmap && (
         <header className="mb-12">
-          <h1 className="text-4xl font-bold tracking-tight mb-2">{beatmap.metadata.title}</h1>
-          <p className="text-zinc-500 dark:text-zinc-400 font-mono text-sm">Beatmap ID: {beatmap.id}</p>
+          <div className="flex flex-col gap-1 mb-6">
+            <h1 className="text-4xl font-bold tracking-tight">{beatmap.title}</h1>
+            <p className="text-lg text-zinc-500">
+              {beatmap.artist} <span className="text-zinc-300 dark:text-zinc-700 mx-2">/</span> {beatmap.version}
+            </p>
+            <span className="text-xs font-mono text-zinc-400 mt-2">ID: {beatmap.id}</span>
+          </div>
           
-          <div className="mt-8">
-            <h3 className="text-sm font-medium text-zinc-400 mb-4 uppercase tracking-wider">Difficulties by Dimension</h3>
-            <div className="flex flex-wrap gap-4">
-              {beatmap.metadata.difficulties.map((d: number, i: number) => (
-                <div key={i} className="bg-zinc-50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 px-4 py-3 rounded-lg">
-                  <div className="text-xs text-zinc-500 mb-1">Dim {i}</div>
-                  <div className="text-lg font-bold tabular-nums">{d.toFixed(4)}</div>
-                </div>
-              ))}
-            </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+            {beatmap.metadata.difficulties.map((d: number, i: number) => (
+              <div key={i} className="bg-zinc-50 dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 px-3 py-2.5 rounded-md">
+                <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1">Dim {i}</div>
+                <div className="text-lg font-bold tabular-nums">{d.toFixed(3)}</div>
+              </div>
+            ))}
           </div>
         </header>
       )}
 
       <section className="space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between border-b border-zinc-200 dark:border-zinc-800 pb-4">
           <div className="flex items-center gap-2">
             <Star className="w-5 h-5 text-zinc-400" />
-            <h2 className="text-xl font-semibold">Top Scores</h2>
+            <h2 className="text-xl font-semibold">Leaderboard</h2>
           </div>
 
           {dimensions !== undefined && (
@@ -320,10 +322,10 @@ function BeatmapPage() {
           <table className="w-full text-sm text-left border-collapse">
             <thead>
               <tr className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-transparent">
-                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Player ID</th>
-                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Mod</th>
-                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Score (Dim {dim})</th>
-                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400 text-right">Accuracy</th>
+                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Player</th>
+                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Mods</th>
+                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400">Score</th>
+                <th className="px-4 py-3 font-medium text-zinc-500 dark:text-zinc-400 text-right">Acc</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
@@ -335,16 +337,21 @@ function BeatmapPage() {
                 ))
               ) : scores?.map((s: Score, idx: number) => (
                 <tr key={idx} className="group hover:bg-white dark:hover:bg-zinc-800/40 transition-colors">
-                  <td className="px-4 py-3 font-mono text-zinc-400 group-hover:text-zinc-900 dark:group-hover:text-zinc-100 transition-colors">{s.player_id}</td>
                   <td className="px-4 py-3">
-                    <span className="px-2 py-0.5 rounded bg-zinc-200 dark:bg-zinc-800 text-[10px] font-bold uppercase tracking-wider">
+                    <div className="flex flex-col">
+                      <span className="font-semibold">{s.player_username}</span>
+                      <span className="text-[10px] text-zinc-400 font-mono">ID: {s.player_id}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="px-1.5 py-0.5 rounded border border-zinc-200 dark:border-zinc-700 bg-zinc-100 dark:bg-zinc-800 text-[10px] font-bold uppercase tabular-nums">
                       {s.mod_str}
                     </span>
                   </td>
-                  <td className="px-4 py-3 font-semibold tabular-nums">
+                  <td className="px-4 py-3 font-bold tabular-nums text-blue-600 dark:text-blue-400">
                     {s.metadata.scores[dim]?.toLocaleString()}
                   </td>
-                  <td className="px-4 py-3 text-right font-mono text-zinc-400">
+                  <td className="px-4 py-3 text-right font-mono text-zinc-500">
                     {(s.metadata.accuracy * 100).toFixed(2)}%
                   </td>
                 </tr>
