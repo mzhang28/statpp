@@ -41,6 +41,12 @@ API_BASE = "https://osu.ppy.sh/api/v2"
 TOKEN_URL = "https://osu.ppy.sh/oauth/token"
 API_VERSION = "20220705"
 
+# osu! caps at 60 requests/minute. Spacing requests slightly wider than
+# 1s puts a run at ~57/min, leaving headroom for the retries that a long
+# run inevitably spends.
+REQUESTS_PER_MINUTE = 57
+REQUEST_SPACING = 60.0 / REQUESTS_PER_MINUTE
+
 RANKING_PAGE_SIZE = 50
 
 # /rankings caps at page 200 (rank ~10k) and, crucially, does NOT error
@@ -251,10 +257,12 @@ class OsuAPI:
         self.token = r.json()["access_token"]
 
     def _rate_limit(self):
-        # osu! asks API users to generally stay around 1 request/sec.
+        # osu! caps at 60 requests/minute. This is per-process, so running
+        # two copies at once doubles the real rate and breaks the cap.
         elapsed = time.monotonic() - self.last_request_at
-        if elapsed < 1.05:
-            time.sleep(1.05 - elapsed)
+
+        if elapsed < REQUEST_SPACING:
+            time.sleep(REQUEST_SPACING - elapsed)
 
     def get(self, path, **params):
         if self.requests_used >= self.max_requests:
