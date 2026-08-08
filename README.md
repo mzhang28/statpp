@@ -49,11 +49,40 @@ the top stratum.
 
 ```
 uv run sample.py sample     # fetch strata, expand players' top-100s
+uv run sample.py fill       # probe (player, map) cells to densify the panel
 uv run sample.py report     # coverage + inter-stratum item overlap
 uv run sample.py maps ID... # top-50 leaderboard for specific maps
 ```
 
 Requires `OSU_CLIENT_ID` / `OSU_CLIENT_SECRET` in `.env`.
+
+### Filling the panel
+
+Top-100 sampling on its own leaves the score matrix too sparse to
+correlate. Within one stratum, 50 players spread 5,000 scores over ~3,000
+maps, so few map pairs share enough players to be compared. `fill` probes
+single (player, map) cells to close that gap, and it reaches the plays
+below a player's top-100 cutoff that sampling cannot see at all.
+
+The panel is built per stratum, because map popularity is stratum-specific.
+Each stratum contributes the maps its own members play most, probed against
+its own players. The globally most-played maps are ones a rank-400k player
+has usually never touched, so probing those against them mostly returns 404.
+
+A share of the probes (`--fill-explore`, default 0.15) goes to random cells
+outside those rectangles. Those are the bridges: nothing else connects one
+stratum's maps to another stratum's players, and each rectangle on its own
+is only internally comparable. A 404 is an observation here rather than a
+wasted request, because it says the player has never submitted a play on
+the map.
+
+Probes are recorded in `Probe` whether or not a score comes back, so a miss
+is never requested twice.
+
+Cells are probed map by map, round-robin across strata, so a run that stops
+early leaves complete columns spread evenly over the ability range. Any pair
+of complete columns shares every player and so can be compared; a
+player-by-player order would leave every column partial instead.
 
 ## What the schema records that isn't obvious
 

@@ -909,66 +909,192 @@ async def crawl_map(api, beatmap_id):
 # ---------------------------------------------------------------------------
 
 @db_session
-def choose_panel(n_items, n_users):
+def stratum_panels(n_items, n_users, rng):
     """
-    Pick a dense rectangle to complete: the most widely played maps
-    against players drawn evenly from every stratum.
+    One rectangle per stratum: the maps that stratum plays, against its
+    own players.
 
-    Top-100 sampling spreads ~5k scores over ~3k maps, so almost no map
-    pair shares enough players to correlate. Probing a chosen rectangle
-    directly is what makes those pairs exist, and it reaches the plays
-    below a player's top-100 cutoff that sampling cannot see at all.
+    Top-100 sampling spreads ~5k scores over ~3k maps per stratum, so
+    almost no map pair shares enough players to correlate. Probing a
+    chosen rectangle is what makes those pairs exist, and it reaches the
+    plays below a player's top-100 cutoff that sampling cannot see.
+
+    The rectangle is per stratum because map popularity is: the globally
+    most-played maps are ones rank-400k players have never touched, so
+    probing those against them mostly returns 404. Counting plays within
+    the stratum picks maps its own members actually play, which is also
+    the overlap a within-stratum correlation needs.
     """
-    counts = defaultdict(set)
-
-    for s in select(s for s in Score if s.first_seen_via == "user_best"):
-        counts[s.beatmap.id].add(s.player.id)
-
-    items = sorted(counts, key=lambda b: -len(counts[b]))[:n_items]
-
-    # Even draw per stratum, so the panel supports within-stratum
-    # correlations rather than being dominated by whichever stratum has
-    # the most expanded players.
+    stratum_of = {}
     by_stratum = defaultdict(list)
 
-    for p in select(p for p in Player if p.best_crawled):
-        by_stratum[p.stratum.label if p.stratum else "?"].append(p.id)
+    for player_id, stratum in select(
+        (p.id, p.stratum) for p in Player if p.best_crawled
+    ):
+        label = stratum.label if stratum else "?"
 
-    for ids in by_stratum.values():
-        ids.sort()
+        stratum_of[player_id] = label
+        by_stratum[label].append(player_id)
 
-    queues = [by_stratum[label] for label in sorted(by_stratum)]
+    played = defaultdict(lambda: defaultdict(set))
 
-    users = [
-        uid for uid in itertools.chain.from_iterable(
-            itertools.zip_longest(*queues)
-        )
-        if uid is not None
-    ][:n_users]
+    for beatmap_id, player_id in select(
+        (s.beatmap.id, s.player.id) for s in Score
+        if s.first_seen_via == "user_best"
+    ):
+        label = stratum_of.get(player_id)
 
-    return items, users
+        if label is not None:
+            played[label][beatmap_id].add(player_id)
+
+    panels = []
+
+    for label in sorted(by_stratum):
+        users = sorted(by_stratum[label])
+
+        if len(users) > n_users:
+            users = sorted(rng.sample(users, n_users))
+
+        counts = played[label]
+
+        # Play counts tie heavily down the tail, so break ties on id:
+        # otherwise the panel changes between runs at the same seed.
+        items = sorted(counts, key=lambda b: (-len(counts[b]), b))[:n_items]
+
+        if items and users:
+            panels.append((label, items, users))
+
+    return panels
 
 
 @db_session
-def pending_cells(items, users):
-    """Cells with neither an observed score nor a previous probe."""
-    known = defaultdict(set)
+def known_cells(items):
+    """
+    Cells that already have an answer: an observed score, or a probe that
+    came back empty. Re-requesting either buys nothing, and a probe that
+    found no score is as much an answer as one that did.
+    """
+    wanted = set(items)
+    known = set()
 
-    for s in select(s for s in Score if s.beatmap.id in items):
-        known[s.beatmap.id].add(s.player.id)
+    for beatmap_id, player_id in select(
+        (s.beatmap.id, s.player.id) for s in Score
+    ):
+        if beatmap_id in wanted:
+            known.add((beatmap_id, player_id))
 
-    for pr in select(pr for pr in Probe if pr.beatmap.id in items):
-        known[pr.beatmap.id].add(pr.player.id)
+    for beatmap_id, player_id in select(
+        (pr.beatmap.id, pr.player.id) for pr in Probe
+    ):
+        if beatmap_id in wanted:
+            known.add((beatmap_id, player_id))
 
-    # Item-major: finishing one map completes a full column, and a
-    # complete column pairs with every other complete column. Going
-    # user-major would leave every column partial until the very end.
-    return [
-        (beatmap_id, user_id)
-        for beatmap_id in items
-        for user_id in users
-        if user_id not in known[beatmap_id]
+    return known
+
+
+def core_columns(panels, known):
+    """
+    Each stratum's rectangle as a list of complete columns, taken
+    round-robin across strata.
+
+    Item-major, so a run that stops early leaves whole columns behind:
+    two complete columns share every player and so pair with each other,
+    whereas a user-major order leaves every column partial and no pair
+    usable. Round-robin across strata so that truncation costs each
+    stratum equally rather than emptying the last one.
+    """
+    per_stratum = [
+        [
+            [
+                (beatmap_id, user_id)
+                for user_id in users
+                if (beatmap_id, user_id) not in known
+            ]
+            for beatmap_id in items
+        ]
+        for _, items, users in panels
     ]
+
+    return [
+        column
+        for group in itertools.zip_longest(*per_stratum)
+        for column in group
+        if column
+    ]
+
+
+def explore_cells(panels, known, n, rng):
+    """
+    Random cells outside every stratum's own rectangle.
+
+    These are the cross-stratum bridges: one stratum's maps against
+    another's players. Nothing else ties the per-stratum rectangles into
+    a single scale, since each rectangle on its own is only internally
+    comparable. A 404 is a real observation here rather than a wasted
+    request: it says the player has never submitted a play on the map.
+
+    Drawn by rejection rather than by building the full map x player
+    product, which is over an order of magnitude larger than the number
+    of cells drawn from it.
+    """
+    items = sorted({b for _, block_items, _ in panels for b in block_items})
+    users = sorted({u for _, _, block_users in panels for u in block_users})
+
+    core = {
+        (beatmap_id, user_id)
+        for _, block_items, block_users in panels
+        for beatmap_id in block_items
+        for user_id in block_users
+    }
+
+    chosen = set()
+
+    # Stop once the draw stops finding anything new, which is what
+    # happens when the space outside the core is nearly used up.
+    misses = 0
+
+    while len(chosen) < n and misses < 10_000:
+        cell = (rng.choice(items), rng.choice(users))
+
+        if cell in core or cell in known or cell in chosen:
+            misses += 1
+            continue
+
+        chosen.add(cell)
+        misses = 0
+
+    return sorted(chosen)
+
+
+def fill_order(panels, known, explore_fraction, rng):
+    """
+    Every cell to probe, tagged core or explore, in probing order.
+
+    Exploration cells are spread through the run rather than appended, so
+    a run that stops early still has the intended mix of both kinds.
+    """
+    columns = core_columns(panels, known)
+    n_core = sum(len(column) for column in columns)
+
+    n_explore = round(n_core * explore_fraction / (1 - explore_fraction))
+    explore = explore_cells(panels, known, n_explore, rng)
+
+    order = []
+    taken = 0
+
+    for i, column in enumerate(columns, start=1):
+        order.extend(("core", b, u) for b, u in column)
+
+        # Keep the running mix at explore_fraction rather than letting
+        # exploration bunch at either end.
+        want = round(len(explore) * i / len(columns))
+
+        order.extend(("explore", b, u) for b, u in explore[taken:want])
+        taken = want
+
+    order.extend(("explore", b, u) for b, u in explore[taken:])
+
+    return order
 
 
 async def probe_cell(api, beatmap_id, user_id):
@@ -1006,41 +1132,64 @@ async def probe_cell(api, beatmap_id, user_id):
     return bool(score)
 
 
-async def fill_panel(api, n_items, n_users):
-    items, users = choose_panel(n_items, n_users)
+def hit_rates(done, found):
+    return ", ".join(
+        f"{kind} {found[kind]}/{done[kind]}"
+        f" ({100.0 * found[kind] / done[kind]:.0f}%)"
+        for kind in sorted(done) if done[kind]
+    )
 
-    if not items or not users:
+
+async def fill_panel(api, n_items, n_users, explore_fraction, seed):
+    rng = random.Random(seed)
+
+    panels = stratum_panels(n_items, n_users, rng)
+
+    if not panels:
         print("Nothing to fill: expand some players first.")
         return
 
-    cells = pending_cells(items, users)
-
-    print(
-        f"panel {len(items)} maps x {len(users)} players, "
-        f"{len(cells)} cells to probe "
-        f"(~{len(cells) / REQUESTS_PER_MINUTE / 60:.1f}h)"
+    known = known_cells(
+        {b for _, block_items, _ in panels for b in block_items}
     )
 
-    done = 0
-    found = 0
+    order = fill_order(panels, known, explore_fraction, rng)
+
+    if not order:
+        print("Nothing to fill: every panel cell already has a score or probe.")
+        return
+
+    n_core = sum(1 for kind, _, _ in order if kind == "core")
+
+    print(
+        f"panel {len(panels)} strata x {n_items} maps x {n_users} players, "
+        f"{len(order)} cells to probe "
+        f"({n_core} core, {len(order) - n_core} exploration, "
+        f"~{len(order) / REQUESTS_PER_MINUTE / 60:.1f}h)"
+    )
+
+    done = defaultdict(int)
+    found = defaultdict(int)
 
     async def one(cell):
-        nonlocal done, found
+        kind, beatmap_id, user_id = cell
 
-        hit = await probe_cell(api, cell[0], cell[1])
+        hit = await probe_cell(api, beatmap_id, user_id)
 
-        done += 1
-        found += hit
+        done[kind] += 1
+        found[kind] += hit
 
-        if done % 100 == 0:
+        probed = sum(done.values())
+
+        if probed % 100 == 0:
             print(
-                f"        {done}/{len(cells)} probed, "
-                f"{found} scores found ({100.0 * found / done:.0f}%)"
+                f"        {probed}/{len(order)} probed, "
+                f"{hit_rates(done, found)}"
             )
 
-    await run_pool(one, cells)
+    await run_pool(one, order)
 
-    print(f"        {done} probed, {found} scores found")
+    print(f"        {sum(done.values())} probed, {hit_rates(done, found)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1215,6 +1364,16 @@ def parse_pages(spec):
     return [p for p in pages if not (p in seen or seen.add(p))]
 
 
+def fraction(value):
+    """A share of the run, so 1.0 is excluded: it would leave no core."""
+    x = float(value)
+
+    if not 0.0 <= x < 1.0:
+        raise argparse.ArgumentTypeError(f"{value} is not in [0, 1)")
+
+    return x
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
 
@@ -1273,14 +1432,24 @@ def main():
         "--fill-items",
         type=int,
         default=60,
-        help="panel width for `fill`: most-played maps to densify",
+        help="panel width for `fill`: maps per stratum, ranked by plays "
+             "within that stratum",
     )
 
     parser.add_argument(
         "--fill-users",
         type=int,
         default=150,
-        help="panel height for `fill`: players probed per map",
+        help="panel height for `fill`: players probed per map, drawn from "
+             "the map's own stratum (a stratum holds at most 50)",
+    )
+
+    parser.add_argument(
+        "--fill-explore",
+        type=fraction,
+        default=0.15,
+        help="share of `fill` probes spent on random cells outside the "
+             "per-stratum rectangles, which are what bridge strata",
     )
 
     args = parser.parse_args()
@@ -1304,7 +1473,13 @@ async def run(args):
                 )
 
             elif args.command == "fill":
-                await fill_panel(api, args.fill_items, args.fill_users)
+                await fill_panel(
+                    api,
+                    args.fill_items,
+                    args.fill_users,
+                    args.fill_explore,
+                    args.seed,
+                )
 
             else:
                 await fetch_strata(
