@@ -13,3 +13,6 @@ training-data
 
 .DS_Store
 statpp.db
+__pycache__/
+*.sqlite
+*.sqlite.bak
