@@ -263,16 +263,26 @@ class OsuAPI:
         for attempt in range(6):
             self._rate_limit()
 
-            r = self.session.get(
-                API_BASE + path,
-                params=params,
-                headers={
-                    "Authorization": f"Bearer {self.token}",
-                    "Accept": "application/json",
-                    "x-api-version": API_VERSION,
-                },
-                timeout=30,
-            )
+            try:
+                r = self.session.get(
+                    API_BASE + path,
+                    params=params,
+                    headers={
+                        "Authorization": f"Bearer {self.token}",
+                        "Accept": "application/json",
+                        "x-api-version": API_VERSION,
+                    },
+                    timeout=30,
+                )
+            except requests.exceptions.RequestException as exc:
+                # Dropped connections and timeouts are as routine as 5xx
+                # over a run this long, and cost the same to retry.
+                self.last_request_at = time.monotonic()
+                self.requests_used += 1
+
+                print(f"        transport error, retrying: {exc}")
+                time.sleep(min(2 ** attempt, 30))
+                continue
 
             self.last_request_at = time.monotonic()
             self.requests_used += 1
@@ -481,13 +491,47 @@ def ingest_score(score, beatmap, source, known_player=None):
 # Stratum sampling
 # ---------------------------------------------------------------------------
 
+def select_from_stratum(stratum, per_stratum, rng):
+    """
+    Bring a stratum's selected count up to per_stratum.
+
+    Sampling is from within the page rather than off the top of it, so a
+    stratum isn't systematically represented by its own strongest edge.
+    """
+    members = list(stratum.players)
+    unselected = [p for p in members if not p.selected]
+    shortfall = min(per_stratum, len(members)) - (len(members) - len(unselected))
+
+    if shortfall <= 0:
+        return 0
+
+    chosen = (
+        unselected if shortfall >= len(unselected)
+        else rng.sample(unselected, shortfall)
+    )
+
+    for p in chosen:
+        p.selected = True
+
+    return len(chosen)
+
+
 def fetch_stratum(api, country, page, per_stratum, rng):
     label = stratum_label(country, page)
 
     with db_session:
         s = Stratum.get(label=label)
+
         if s is not None and s.fetched:
-            print(f"STRATUM {label}  (already fetched)")
+            # Already have the page's membership stored, so a raised
+            # --per-stratum tops up from it rather than refetching.
+            added = select_from_stratum(s, per_stratum, rng)
+            selected = sum(1 for p in s.players if p.selected)
+
+            print(
+                f"STRATUM {label:<12} (cached)"
+                f"{'':<30}{selected} selected (+{added})"
+            )
             return
 
     params = {"page": page}
@@ -531,14 +575,8 @@ def fetch_stratum(api, country, page, per_stratum, rng):
 
             entries.append(p)
 
-        # Sample within the page rather than taking the top of it, so the
-        # stratum isn't systematically its own strongest edge.
-        chosen = entries if per_stratum >= len(entries) else rng.sample(entries, per_stratum)
-
-        for p in chosen:
-            p.selected = True
-
         s.fetched = True
+        n_chosen = select_from_stratum(s, per_stratum, rng)
 
         # For country strata the page number is a country rank; the global
         # ranks it actually covers are the interesting thing.
@@ -547,7 +585,7 @@ def fetch_stratum(api, country, page, per_stratum, rng):
 
     print(
         f"STRATUM {label:<12} page={page:<4} {span:<26} "
-        f"{len(entries)} players, {len(chosen)} selected"
+        f"{len(entries)} players, {n_chosen} selected"
     )
 
 
