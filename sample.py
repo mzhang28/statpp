@@ -814,6 +814,12 @@ def deepen_pages(have):
 
 
 @db_session
+def sampled_pages():
+    """Pages already stored, so a cycle can top their selection up."""
+    return [(s.country or None, s.page) for s in select(s for s in Stratum)]
+
+
+@db_session
 def proposed_pages(n):
     """
     Ranking pages worth sampling that have not been sampled yet.
@@ -1396,15 +1402,21 @@ async def grow(api, args):
         cycle += 1
         before = api.requests_used
 
-        pages = proposed_pages(args.grow_pages)
+        fresh = proposed_pages(args.grow_pages)
 
-        if pages:
-            print(f"\n=== cycle {cycle}: {len(pages)} new pages ===")
+        # Stored pages cost no request: fetch_stratum sees them cached and
+        # only tops their selection up to --per-stratum. Without them a
+        # stratum stays at whatever count the run that created it used, and
+        # raising --per-stratum later would reach the new pages alone.
+        pages = sampled_pages() + fresh
 
-            await fetch_strata(api, pages, args.per_stratum, args.seed)
-            await expand_players(api)
-        else:
-            print(f"\n=== cycle {cycle}: no unsampled pages left ===")
+        print(
+            f"\n=== cycle {cycle}: {len(fresh)} new pages, "
+            f"{len(pages) - len(fresh)} stored ==="
+        )
+
+        await fetch_strata(api, pages, args.per_stratum, args.seed)
+        await expand_players(api)
 
         print(f"=== cycle {cycle}: filling ===")
 
