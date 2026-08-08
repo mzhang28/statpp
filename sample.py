@@ -14,15 +14,16 @@ top stratum.
 """
 
 import argparse
+import asyncio
 import itertools
 import os
 import random
-import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
+import httpx
+from aiolimiter import AsyncLimiter
 from dotenv import load_dotenv
 from pony.orm import (
     Database,
@@ -41,11 +42,16 @@ API_BASE = "https://osu.ppy.sh/api/v2"
 TOKEN_URL = "https://osu.ppy.sh/oauth/token"
 API_VERSION = "20220705"
 
-# osu! caps at 60 requests/minute. Spacing requests slightly wider than
-# 1s puts a run at ~57/min, leaving headroom for the retries that a long
-# run inevitably spends.
+# osu! caps at 60 requests/minute. Leave a little headroom for the token
+# refreshes and retries a long run inevitably spends.
 REQUESTS_PER_MINUTE = 57
-REQUEST_SPACING = 60.0 / REQUESTS_PER_MINUTE
+
+# Median API latency is ~1.3s, which is longer than the ~1.05s the rate
+# limit allows between requests. Sequential code therefore tops out around
+# 1/latency (~46/min) and can never reach the cap however good its
+# limiter is. Keeping a few requests in flight is what closes that gap;
+# the limiter, not the concurrency, is what bounds the rate.
+CONCURRENCY = 4
 
 RANKING_PAGE_SIZE = 50
 
@@ -98,6 +104,55 @@ MOD_ALIASES = {"NC": "DT"}
 db = Database()
 
 
+@db.on_connect(provider="sqlite")
+def sqlite_pragmas(_db, connection):
+    cursor = connection.cursor()
+
+    # WAL is what lets analysis read while the sampler writes. Under the
+    # default journal mode a writer takes an exclusive lock, so a long
+    # sampling run would block every reader for its whole duration.
+    cursor.execute("PRAGMA journal_mode = WAL")
+
+    # Under WAL a writer still briefly excludes other writers; wait rather
+    # than failing outright.
+    cursor.execute("PRAGMA busy_timeout = 30000")
+
+    # WAL already gives durability across process crashes. NORMAL only
+    # risks the very last commits, and only on OS-level crash.
+    cursor.execute("PRAGMA synchronous = NORMAL")
+
+    cursor.close()
+
+
+def bind_db(path):
+    db.bind(
+        provider="sqlite",
+        filename=str(Path(path).resolve()),
+        create_db=True,
+    )
+    db.generate_mapping(create_tables=True)
+
+
+def connect_readonly(path=None):
+    """
+    Connection for analysis running alongside a live sampler.
+
+    Deliberately not `mode=ro`: a genuinely read-only connection cannot
+    create the -shm index a WAL database needs, so it fails whenever no
+    writer happens to be attached. `query_only` gives the same protection
+    without that failure mode.
+    """
+    import sqlite3
+
+    path = path or os.environ.get("OSU_DB", "osu.sqlite")
+
+    conn = sqlite3.connect(str(Path(path).resolve()), timeout=30)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA query_only = 1")
+
+    return conn
+
+
 class Beatmap(db.Entity):
     id = PrimaryKey(int, size=64)
 
@@ -126,6 +181,7 @@ class Beatmap(db.Entity):
     raw = Required(Json)
 
     scores = Set("Score")
+    probes = Set("Probe")
 
 
 class Stratum(db.Entity):
@@ -180,6 +236,25 @@ class Player(db.Entity):
     raw = Required(Json)
 
     scores = Set("Score")
+    probes = Set("Probe")
+
+
+class Probe(db.Entity):
+    """
+    One directly requested (player, beatmap) cell.
+
+    Recorded whether or not a score came back: a miss means the player has
+    no submitted play on the map at all, which is a different fact from a
+    low one, and both are worth not re-requesting.
+    """
+
+    player = Required(Player)
+    beatmap = Required(Beatmap)
+
+    found = Required(bool)
+    probed_at = Required(datetime)
+
+    PrimaryKey(player, beatmap)
 
 
 class Score(db.Entity):
@@ -226,92 +301,142 @@ class RequestBudgetExhausted(Exception):
     pass
 
 
+class NotFound(Exception):
+    """The API has no such resource, e.g. a player with no play on a map."""
+
+
 class OsuAPI:
+    """
+    Rate is bounded by a leaky bucket, not by spacing between calls, so
+    concurrent callers share one budget and the cap holds no matter how
+    many coroutines are in flight. Still per-process: two copies of the
+    program running at once double the real rate.
+    """
+
     def __init__(self, max_requests: int):
         self.client_id = os.environ["OSU_CLIENT_ID"]
         self.client_secret = os.environ["OSU_CLIENT_SECRET"]
 
-        self.session = requests.Session()
+        # Capacity of one, not of REQUESTS_PER_MINUTE. A leaky bucket
+        # starts full, so AsyncLimiter(57, 60) would let the first 57
+        # requests go out in a burst before throttling at all, which is
+        # well over the cap on any sliding-window measure of it. Capacity
+        # one paces evenly instead, and concurrency still helps because
+        # the wait no longer includes each response's latency.
+        self.limiter = AsyncLimiter(1, 60 / REQUESTS_PER_MINUTE)
+        self.client = httpx.AsyncClient(timeout=30)
         self.token = None
 
         self.max_requests = max_requests
         self.requests_used = 0
 
-        self.last_request_at = 0.0
+        # Serialises token refresh so a 401 seen by several in-flight
+        # requests doesn't trigger one refresh per request.
+        self.token_lock = asyncio.Lock()
 
-        self.refresh_token()
+    async def __aenter__(self):
+        await self.refresh_token()
+        return self
 
-    def refresh_token(self):
-        r = self.session.post(
-            TOKEN_URL,
-            data={
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-                "grant_type": "client_credentials",
-                "scope": "public",
-            },
-            headers={"Accept": "application/json"},
-            timeout=30,
-        )
-        r.raise_for_status()
-        self.token = r.json()["access_token"]
+    async def __aexit__(self, *exc):
+        await self.client.aclose()
 
-    def _rate_limit(self):
-        # osu! caps at 60 requests/minute. This is per-process, so running
-        # two copies at once doubles the real rate and breaks the cap.
-        elapsed = time.monotonic() - self.last_request_at
+    async def refresh_token(self, stale=None):
+        async with self.token_lock:
+            # Another coroutine already refreshed while we waited.
+            if stale is not None and self.token != stale:
+                return
 
-        if elapsed < REQUEST_SPACING:
-            time.sleep(REQUEST_SPACING - elapsed)
+            r = await self.client.post(
+                TOKEN_URL,
+                data={
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "grant_type": "client_credentials",
+                    "scope": "public",
+                },
+                headers={"Accept": "application/json"},
+            )
+            r.raise_for_status()
+            self.token = r.json()["access_token"]
 
-    def get(self, path, **params):
-        if self.requests_used >= self.max_requests:
-            raise RequestBudgetExhausted()
-
+    async def get(self, path, **params):
         for attempt in range(6):
-            self._rate_limit()
+            if self.requests_used >= self.max_requests:
+                raise RequestBudgetExhausted()
 
-            try:
-                r = self.session.get(
-                    API_BASE + path,
-                    params=params,
-                    headers={
-                        "Authorization": f"Bearer {self.token}",
-                        "Accept": "application/json",
-                        "x-api-version": API_VERSION,
-                    },
-                    timeout=30,
-                )
-            except requests.exceptions.RequestException as exc:
-                # Dropped connections and timeouts are as routine as 5xx
-                # over a run this long, and cost the same to retry.
-                self.last_request_at = time.monotonic()
+            token = self.token
+
+            async with self.limiter:
                 self.requests_used += 1
 
-                print(f"        transport error, retrying: {exc}")
-                time.sleep(min(2 ** attempt, 30))
-                continue
+                try:
+                    r = await self.client.get(
+                        API_BASE + path,
+                        params=params,
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Accept": "application/json",
+                            "x-api-version": API_VERSION,
+                        },
+                    )
+                except httpx.HTTPError as exc:
+                    # Dropped connections and timeouts are as routine as
+                    # 5xx over a run this long, and retry the same way.
+                    print(f"        transport error, retrying: {exc}")
+                    await asyncio.sleep(min(2 ** attempt, 30))
+                    continue
 
-            self.last_request_at = time.monotonic()
-            self.requests_used += 1
+            if r.status_code == 404:
+                raise NotFound(path)
 
             if r.status_code == 401:
-                self.refresh_token()
+                await self.refresh_token(stale=token)
                 continue
 
             if r.status_code == 429:
                 delay = float(r.headers.get("Retry-After", 2 ** attempt))
-                time.sleep(max(delay, 1))
+                await asyncio.sleep(max(delay, 1))
                 continue
 
             if 500 <= r.status_code < 600:
-                time.sleep(min(2 ** attempt, 30))
+                await asyncio.sleep(min(2 ** attempt, 30))
                 continue
 
             r.raise_for_status()
             return r.json()
 
         raise RuntimeError(f"API request repeatedly failed: {path}")
+
+
+async def run_pool(coro_fn, items, concurrency=CONCURRENCY):
+    """
+    Apply an async function over items with bounded concurrency.
+
+    Order of completion is not order of submission, so anything that needs
+    balanced partial results must order `items` accordingly rather than
+    rely on this.
+    """
+    semaphore = asyncio.Semaphore(concurrency)
+    stop = asyncio.Event()
+
+    async def one(item):
+        if stop.is_set():
+            return
+
+        async with semaphore:
+            if stop.is_set():
+                return
+
+            try:
+                await coro_fn(item)
+            except RequestBudgetExhausted:
+                stop.set()
+
+    await asyncio.gather(*(one(item) for item in items))
+
+    if stop.is_set():
+        raise RequestBudgetExhausted()
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +649,7 @@ def select_from_stratum(stratum, per_stratum, rng):
     return len(chosen)
 
 
-def fetch_stratum(api, country, page, per_stratum, rng):
+async def fetch_stratum(api, country, page, per_stratum, rng):
     label = stratum_label(country, page)
 
     with db_session:
@@ -546,7 +671,7 @@ def fetch_stratum(api, country, page, per_stratum, rng):
     if country:
         params["country"] = country
 
-    payload = api.get("/rankings/osu/performance", **params)
+    payload = await api.get("/rankings/osu/performance", **params)
     ranking = payload.get("ranking", [])
 
     with db_session:
@@ -597,11 +722,13 @@ def fetch_stratum(api, country, page, per_stratum, rng):
     )
 
 
-def fetch_strata(api, pages, per_stratum, seed):
+async def fetch_strata(api, pages, per_stratum, seed):
+    # Sequential: strata are few, and each one's selection feeds the
+    # expansion queue that follows.
     rng = random.Random(seed)
 
     for country, page in pages:
-        fetch_stratum(api, country, page, per_stratum, rng)
+        await fetch_stratum(api, country, page, per_stratum, rng)
 
 
 # ---------------------------------------------------------------------------
@@ -628,7 +755,7 @@ def pending_by_stratum():
     return dict(pending)
 
 
-def crawl_player_best(api, player_id):
+async def crawl_player_best(api, player_id):
     with db_session:
         player = Player[player_id]
 
@@ -640,7 +767,7 @@ def crawl_player_best(api, player_id):
         rank = player.global_rank
 
     # Get User Scores includes beatmap + beatmapset for "best" scores.
-    scores = api.get(
+    scores = await api.get(
         f"/users/{player_id}/scores/best",
         mode="osu",
         legacy_only=0,
@@ -685,12 +812,13 @@ def crawl_player_best(api, player_id):
     )
 
 
-def expand_players(api):
+async def expand_players(api):
     """
     Round-robin across strata.
 
     If the budget runs out mid-run the coverage stays balanced across the
-    ability range instead of being depth-first in the top stratum.
+    ability range instead of being depth-first in the top stratum. The
+    pool preserves submission order closely enough for that to hold.
     """
     pending = pending_by_stratum()
 
@@ -700,18 +828,22 @@ def expand_players(api):
 
     queues = [pending[label] for label in sorted(pending)]
 
-    for player_id in itertools.chain.from_iterable(
-        itertools.zip_longest(*queues)
-    ):
-        if player_id is not None:
-            crawl_player_best(api, player_id)
+    order = [
+        player_id
+        for player_id in itertools.chain.from_iterable(
+            itertools.zip_longest(*queues)
+        )
+        if player_id is not None
+    ]
+
+    await run_pool(lambda pid: crawl_player_best(api, pid), order)
 
 
 # ---------------------------------------------------------------------------
 # Map leaderboards
 # ---------------------------------------------------------------------------
 
-def crawl_map(api, beatmap_id):
+async def crawl_map(api, beatmap_id):
     """
     Top-50 leaderboard for one map.
 
@@ -728,12 +860,12 @@ def crawl_map(api, beatmap_id):
         version = b.version if b is not None else None
 
     if version is None:
-        data = api.get(f"/beatmaps/{beatmap_id}")
+        data = await api.get(f"/beatmaps/{beatmap_id}")
         with db_session:
             upsert_beatmap(data)
             version = Beatmap[beatmap_id].version
 
-    payload = api.get(
+    payload = await api.get(
         f"/beatmaps/{beatmap_id}/scores",
         mode="osu",
         legacy_only=0,
@@ -770,6 +902,145 @@ def crawl_map(api, beatmap_id):
         f"MAP     {beatmap_id}  {version}  "
         f"{len(scores)} scores"
     )
+
+
+# ---------------------------------------------------------------------------
+# Panel filling
+# ---------------------------------------------------------------------------
+
+@db_session
+def choose_panel(n_items, n_users):
+    """
+    Pick a dense rectangle to complete: the most widely played maps
+    against players drawn evenly from every stratum.
+
+    Top-100 sampling spreads ~5k scores over ~3k maps, so almost no map
+    pair shares enough players to correlate. Probing a chosen rectangle
+    directly is what makes those pairs exist, and it reaches the plays
+    below a player's top-100 cutoff that sampling cannot see at all.
+    """
+    counts = defaultdict(set)
+
+    for s in select(s for s in Score if s.first_seen_via == "user_best"):
+        counts[s.beatmap.id].add(s.player.id)
+
+    items = sorted(counts, key=lambda b: -len(counts[b]))[:n_items]
+
+    # Even draw per stratum, so the panel supports within-stratum
+    # correlations rather than being dominated by whichever stratum has
+    # the most expanded players.
+    by_stratum = defaultdict(list)
+
+    for p in select(p for p in Player if p.best_crawled):
+        by_stratum[p.stratum.label if p.stratum else "?"].append(p.id)
+
+    for ids in by_stratum.values():
+        ids.sort()
+
+    queues = [by_stratum[label] for label in sorted(by_stratum)]
+
+    users = [
+        uid for uid in itertools.chain.from_iterable(
+            itertools.zip_longest(*queues)
+        )
+        if uid is not None
+    ][:n_users]
+
+    return items, users
+
+
+@db_session
+def pending_cells(items, users):
+    """Cells with neither an observed score nor a previous probe."""
+    known = defaultdict(set)
+
+    for s in select(s for s in Score if s.beatmap.id in items):
+        known[s.beatmap.id].add(s.player.id)
+
+    for pr in select(pr for pr in Probe if pr.beatmap.id in items):
+        known[pr.beatmap.id].add(pr.player.id)
+
+    # Item-major: finishing one map completes a full column, and a
+    # complete column pairs with every other complete column. Going
+    # user-major would leave every column partial until the very end.
+    return [
+        (beatmap_id, user_id)
+        for beatmap_id in items
+        for user_id in users
+        if user_id not in known[beatmap_id]
+    ]
+
+
+async def probe_cell(api, beatmap_id, user_id):
+    try:
+        payload = await api.get(
+            f"/beatmaps/{beatmap_id}/scores/users/{user_id}",
+            mode="osu",
+            legacy_only=0,
+        )
+    except NotFound:
+        with db_session:
+            Probe(
+                player=Player[user_id],
+                beatmap=Beatmap[beatmap_id],
+                found=False,
+                probed_at=utcnow(),
+            )
+        return False
+
+    score = payload.get("score")
+
+    with db_session:
+        beatmap = Beatmap[beatmap_id]
+
+        if score:
+            ingest_score(score, beatmap, source="probe")
+
+        Probe(
+            player=Player[user_id],
+            beatmap=beatmap,
+            found=bool(score),
+            probed_at=utcnow(),
+        )
+
+    return bool(score)
+
+
+async def fill_panel(api, n_items, n_users):
+    items, users = choose_panel(n_items, n_users)
+
+    if not items or not users:
+        print("Nothing to fill: expand some players first.")
+        return
+
+    cells = pending_cells(items, users)
+
+    print(
+        f"panel {len(items)} maps x {len(users)} players, "
+        f"{len(cells)} cells to probe "
+        f"(~{len(cells) / REQUESTS_PER_MINUTE / 60:.1f}h)"
+    )
+
+    done = 0
+    found = 0
+
+    async def one(cell):
+        nonlocal done, found
+
+        hit = await probe_cell(api, cell[0], cell[1])
+
+        done += 1
+        found += hit
+
+        if done % 100 == 0:
+            print(
+                f"        {done}/{len(cells)} probed, "
+                f"{found} scores found ({100.0 * found / done:.0f}%)"
+            )
+
+    await run_pool(one, cells)
+
+    print(f"        {done} probed, {found} scores found")
 
 
 # ---------------------------------------------------------------------------
@@ -949,12 +1220,13 @@ def main():
 
     parser.add_argument(
         "command",
-        choices=["sample", "report", "maps"],
+        choices=["sample", "report", "maps", "fill"],
         nargs="?",
         default="sample",
         help="sample: fetch strata and expand players; "
              "report: stratum coverage and overlap; "
-             "maps: crawl leaderboards for the given beatmap IDs",
+             "maps: crawl leaderboards for the given beatmap IDs; "
+             "fill: densify the panel by probing (player, map) cells",
     )
 
     parser.add_argument(
@@ -997,39 +1269,57 @@ def main():
         help="RNG seed for within-stratum player selection",
     )
 
+    parser.add_argument(
+        "--fill-items",
+        type=int,
+        default=60,
+        help="panel width for `fill`: most-played maps to densify",
+    )
+
+    parser.add_argument(
+        "--fill-users",
+        type=int,
+        default=150,
+        help="panel height for `fill`: players probed per map",
+    )
+
     args = parser.parse_args()
 
-    db.bind(
-        provider="sqlite",
-        filename=str(Path(args.db).resolve()),
-        create_db=True,
-    )
-    db.generate_mapping(create_tables=True)
+    bind_db(args.db)
 
     if args.command == "report":
         report()
         return
 
-    api = OsuAPI(args.requests)
+    asyncio.run(run(args))
 
-    try:
-        if args.command == "maps":
-            for beatmap_id in args.beatmaps:
-                crawl_map(api, beatmap_id)
-        else:
-            fetch_strata(
-                api,
-                parse_pages(args.pages),
-                args.per_stratum,
-                args.seed,
-            )
-            expand_players(api)
 
-    except RequestBudgetExhausted:
-        print("\nRequest budget exhausted.")
+async def run(args):
+    async with OsuAPI(args.requests) as api:
+        try:
+            if args.command == "maps":
+                await run_pool(
+                    lambda bid: crawl_map(api, bid),
+                    args.beatmaps,
+                )
 
-    finally:
-        print_stats(api)
+            elif args.command == "fill":
+                await fill_panel(api, args.fill_items, args.fill_users)
+
+            else:
+                await fetch_strata(
+                    api,
+                    parse_pages(args.pages),
+                    args.per_stratum,
+                    args.seed,
+                )
+                await expand_players(api)
+
+        except RequestBudgetExhausted:
+            print("\nRequest budget exhausted.")
+
+        finally:
+            print_stats(api)
 
 
 if __name__ == "__main__":
