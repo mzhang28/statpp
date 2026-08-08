@@ -1247,6 +1247,7 @@ def fill_order(panels, known, explore_fraction, budget, rng):
     order = []
     taken = 0
 
+
     for i, column in enumerate(columns, start=1):
         order.extend(("core", b, u) for b, u in column)
 
@@ -1259,7 +1260,7 @@ def fill_order(panels, known, explore_fraction, budget, rng):
 
     order.extend(("explore", b, u) for b, u in explore[taken:])
 
-    return order
+    return order, n_core
 
 
 async def probe_cell(api, beatmap_id, user_id):
@@ -1326,7 +1327,7 @@ async def fill_panel(
 
     if not panels:
         print("Nothing to fill: expand some players first.")
-        return
+        return 0, 0
 
     known = known_cells(
         {b for _, block_items, _ in panels for b in block_items}
@@ -1337,14 +1338,14 @@ async def fill_panel(
     if limit is not None:
         budget = min(budget, limit)
 
-    order = fill_order(panels, known, explore_fraction, budget, rng)
+    order, backlog = fill_order(panels, known, explore_fraction, budget, rng)
 
     if limit is not None:
         order = order[:limit]
 
     if not order:
         print("Nothing to fill: every panel cell already has a score or probe.")
-        return
+        return 0, backlog
 
     n_core = sum(1 for kind, _, _ in order if kind == "core")
 
@@ -1352,7 +1353,8 @@ async def fill_panel(
         f"panel {len(panels)} strata x {n_items} maps x {n_users} players, "
         f"{len(order)} cells to probe "
         f"({n_core} core, {len(order) - n_core} exploration, "
-        f"~{len(order) / REQUESTS_PER_MINUTE / 60:.1f}h)"
+        f"~{len(order) / REQUESTS_PER_MINUTE / 60:.1f}h) "
+        f"| {backlog:,} core cells outstanding"
     )
 
     done = defaultdict(int)
@@ -1374,14 +1376,30 @@ async def fill_panel(
                 f"{hit_rates(done, found)}"
             )
 
-    await run_pool(one, order)
+    try:
+        await run_pool(one, order)
+    finally:
+        probed = sum(done.values())
+        print(f"        {probed} probed, {hit_rates(done, found)}")
 
-    print(f"        {sum(done.values())} probed, {hit_rates(done, found)}")
+    return probed, backlog - done["core"]
 
 
 # ---------------------------------------------------------------------------
 # Growing the graph
 # ---------------------------------------------------------------------------
+
+def outstanding_core(n_items, n_users, seed, seeds):
+    """Core cells still unprobed, for deciding whether to expand."""
+    panels = stratum_panels(n_items, n_users, random.Random(seed), seeds)
+
+    if not panels:
+        return 0
+
+    known = known_cells({b for _, items, _ in panels for b in items})
+
+    return sum(len(column) for column in core_columns(panels, known))
+
 
 async def grow(api, args):
     """
@@ -1398,11 +1416,31 @@ async def grow(api, args):
     """
     cycle = 0
 
+    # Core cells the last fill left unprobed. Expansion waits while this is
+    # large: four new strata add roughly 12,000 cells to the panel and a
+    # cycle probes 2,000 of them, so expanding every cycle grows the panel
+    # about six times faster than it can be filled. Every stratum then stays
+    # permanently sparse, which is the one thing a within-stratum
+    # correlation cannot tolerate. Measured up front rather than assumed
+    # empty, so a resumed run does not expand once before noticing.
+    backlog = outstanding_core(
+        args.fill_items,
+        args.fill_users,
+        args.seed,
+        parse_seed_maps(args.seed_maps),
+    )
+
+    print(f"{backlog:,} core cells outstanding at start")
+
     while True:
         cycle += 1
         before = api.requests_used
 
-        fresh = proposed_pages(args.grow_pages)
+        fresh = (
+            proposed_pages(args.grow_pages)
+            if backlog <= args.grow_backlog
+            else []
+        )
 
         # Stored pages cost no request: fetch_stratum sees them cached and
         # only tops their selection up to --per-stratum. Without them a
@@ -1410,9 +1448,11 @@ async def grow(api, args):
         # raising --per-stratum later would reach the new pages alone.
         pages = sampled_pages() + fresh
 
+        held = "" if fresh else f", expansion held at {backlog:,} outstanding"
+
         print(
             f"\n=== cycle {cycle}: {len(fresh)} new pages, "
-            f"{len(pages) - len(fresh)} stored ==="
+            f"{len(pages) - len(fresh)} stored{held} ==="
         )
 
         await fetch_strata(api, pages, args.per_stratum, args.seed)
@@ -1420,7 +1460,7 @@ async def grow(api, args):
 
         print(f"=== cycle {cycle}: filling ===")
 
-        await fill_panel(
+        _, backlog = await fill_panel(
             api,
             args.fill_items,
             args.fill_users,
@@ -1722,6 +1762,14 @@ def main():
         type=int,
         default=2000,
         help="cells `grow` probes per cycle before expanding again",
+    )
+
+    parser.add_argument(
+        "--grow-backlog",
+        type=int,
+        default=4000,
+        help="`grow` stops adding pages while more than this many core "
+             "cells are unprobed, so the panel cannot outrun the filling",
     )
 
     args = parser.parse_args()
