@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
 """
-Find maps that hand out more pp than their star rating says they should.
+Find maps worth more pp than their star rating warrants.
 
-The fit gives each map a number for how much pp it pays a player beyond
-that player's usual haul. That on its own is not a complaint about the
-map: a genuinely hard map ought to pay more. It only becomes one when the
-map pays more than other maps rated equally hard.
+The fit gives each map a pp value from the scores set on it, once the
+strength of the players who set them is taken out. A high value is no
+complaint about the map on its own, since a genuinely hard map should be
+worth a lot. It becomes one when the map is worth more than others rated
+equally hard.
 
-So each map is compared against its own peers. Maps are grouped by mod
-combination, since a mod changes what the map actually demands, and
-within each group the payout is regressed on the official star rating.
-The gap between a map's fitted payout and what that curve predicts for
-its rating is the number reported here.
+Each map is therefore compared against its own peers: maps within half a
+star of its official rating, under the same mods, since a mod changes what
+the map demands. The difference between the two is the delta reported
+here, and it is in plain pp.
 
-Reading it: a large positive gap means the map pays well for how hard
-osu! rates it. A gap near zero means the rating and the payout agree.
+A large positive delta means osu awards more on the map than its rating
+warrants. A delta near zero means the rating and the awarded pp agree.
 
-pp is the observed quantity and the payout is inferred from the whole
-player graph without reference to it, so the two are not the same
-measurement twice.
+Live pp is observed and the local value is inferred from the whole player
+graph without reference to it, so the two are not one measurement twice.
 
 Reads through connect_readonly(), so it runs while the sampler writes.
 """
@@ -48,9 +47,9 @@ def beatmap_facts(conn):
     }
 
 
-def expected_payout(stars, payout, window, min_neighbours):
+def expected_pp(stars, local_pp, window, min_neighbours):
     """
-    What maps of about this star rating pay, taken from those maps alone.
+    What maps of about this star rating are worth, from those maps alone.
 
     A curve fitted across a whole mod combination extrapolates at the ends
     of its star range, and the ends are exactly where the sparsest maps
@@ -65,7 +64,7 @@ def expected_payout(stars, payout, window, min_neighbours):
         near[i] = False
 
         if near.sum() >= min_neighbours:
-            expected[i] = np.median(payout[near])
+            expected[i] = np.median(local_pp[near])
 
     return expected
 
@@ -126,18 +125,18 @@ def main():
     item_at = {k: j for j, k in enumerate(items)}
     anchors = np.array([item_at[k] for k in ranked[:args.anchors]])
 
-    # Two-sided, because this wants an even-handed payout for every map
+    # Two-sided, because this wants an even-handed value for every map
     # rather than the one-sided rule that only ever marks maps down.
-    ability, payout, _ = fit(
+    ability, local_pp, _ = fit(
         rows, cols, values,
         len(roster), len(items), anchors,
         args.iterations, False,
     )
 
-    ability, _, payout, payout_sd = fit_with_uncertainty(
+    ability, _, local_pp, local_pp_sd = fit_with_uncertainty(
         rows, cols, values,
         len(roster), len(items), anchors,
-        ability, payout, args.uncertainty_iterations,
+        ability, local_pp, args.uncertainty_iterations,
     )
 
     # What osu actually awarded on each map, in plain pp.
@@ -164,13 +163,13 @@ def main():
         index = np.array([j for j, _ in group])
         stars = np.array([facts[b][0] for _, b in group], dtype=float)
 
-        predicted = expected_payout(
-            stars, payout[index], args.star_window, args.min_neighbours
+        predicted = expected_pp(
+            stars, local_pp[index], args.star_window, args.min_neighbours
         )
 
         for spot, j in enumerate(index):
             if not np.isnan(predicted[spot]):
-                gaps[j] = (payout[j] - predicted[spot], predicted[spot], mods)
+                gaps[j] = (local_pp[j] - predicted[spot], predicted[spot], mods)
 
         compared = int(np.isfinite(predicted).sum())
 
@@ -207,7 +206,7 @@ def main():
         )
 
     print()
-    print("maps osu pays more for than their star rating warrants")
+    print("maps worth more pp than their star rating warrants")
     print()
     print(header)
     print("-" * 88)
@@ -228,9 +227,9 @@ def main():
 
     print()
     print(
-        f"gaps run {spread.min():+.0f} to {spread.max():+.0f}pp, "
+        f"deltas run {spread.min():+.0f} to {spread.max():+.0f}pp, "
         f"half within +/-{np.percentile(np.abs(spread), 50):.0f}pp, "
-        f"typical uncertainty +/-{np.median(payout_sd):.0f}pp"
+        f"typical uncertainty +/-{np.median(local_pp_sd):.0f}pp"
     )
 
 
