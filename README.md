@@ -8,19 +8,29 @@ The framing matters: "true difficulty" is not identifiable on its own, but
 **discrepancy between empirical difficulty and official pp** is well-posed.
 That discrepancy is the deliverable.
 
+## Estimand
+
+The target is **best demonstrated submitted performance**, not average
+performance and not attempt probability. This is a deliberate choice, and
+it settles several questions that would otherwise look like confounds.
+
+Unsubmitted plays and non-PB plays are out of scope by construction. Grind
+is part of what "demonstrated" means, so a player who ran a map 400 times
+and set a high PB has demonstrated that PB, so attempt count is part of the
+definition rather than a nuisance variable to regress out.
+
 ## Sampling
 
 `sample.py` draws players from log-spaced slices of the performance
 ranking rather than crawling by map overlap. Overlap-based crawling walks
-toward heavily-played maps, which is close to the definition of farm — it
+toward heavily-played maps, which is close to the definition of farm. It
 would build the reference backbone out of exactly the region the model is
 later supposed to call distorted.
 
-Strata are roughly log-spaced in **global rank**, from #1 to ~#438k.
-Two constraints shape the ladder:
+Strata are roughly log-spaced in **global rank**, from #1 to ~#438k:
 
-- `/rankings` caps at page 200 (rank ~10k) and **does not error past it** —
-  page 201+ silently returns page 200's contents. Pages are clamped.
+- `/rankings` caps at page 200 (rank ~10k) and **does not error past it**.
+  Page 201+ silently returns page 200's contents, so pages are clamped.
 - Below rank 10k, coverage comes from country rankings, which give ~10k
   players *per country*. Country choice is by playerbase size: a country
   needs enough ranked players for deep pages to hold real accounts
@@ -28,8 +38,8 @@ Two constraints shape the ladder:
 
 Spacing is logarithmic because adjacent strata must share map vocabulary
 for a joint player/map scale to be identifiable. Top-50 players and rank-10k
-players have nearly disjoint top-100s, and nothing bridges them directly —
-a popular map's top-50 leaderboard is all elite players, so it adds no
+players have nearly disjoint top-100s, and nothing bridges them directly.
+A popular map's top-50 leaderboard is all elite players, so it adds no
 vertical spread. The only bridge is the chain of intermediate strata, and
 `sample.py report` measures whether that chain actually holds.
 
@@ -47,31 +57,26 @@ Requires `OSU_CLIENT_ID` / `OSU_CLIENT_SECRET` in `.env`.
 
 ## What the schema records that isn't obvious
 
-**Truncation bounds.** Both data sources are censored, not merely
-incomplete, and the censoring threshold is observable — which makes the
-missing data usable rather than discardable:
-
-- `Player.best_cutoff_pp` — a player's 100th-best play. If `best_count`
-  is 100, every map absent from their list is known to be worth *less than*
-  this, which is a real constraint on the likelihood rather than a gap.
-- `Beatmap.leaderboard_cutoff_pp` — the 50th-place score, bounding everyone
-  absent from the board.
-
-Selection here is on the outcome variable: a player's top-100 is exactly
-the set of their plays with the highest positive residuals. Fitting to it
-naively biases every observed residual upward.
-
 **The item is `(beatmap, mod_key)`, not the beatmap.** `Score.mod_key` is
 the canonical difficulty-relevant mod combination (`NC`→`DT`, cosmetic mods
-dropped). `Score.mod_settings` flags lazer scores carrying mod settings
-(custom rates, AR overrides) — those aren't comparable to the plain
-combination and are marked rather than merged.
+dropped). `Score.mod_settings` flags lazer scores that include mod settings
+(custom rates, AR overrides). Those aren't comparable to the plain
+combination, so they're marked rather than merged.
+
+**Truncation bounds**, recorded because they're free at ingest time rather
+than because anything currently consumes them:
+
+- `Player.best_cutoff_pp` is a player's 100th-best play. If `best_count`
+  is 100, every map absent from their list is worth less than this.
+- `Beatmap.leaderboard_cutoff_pp` is the 50th-place score, bounding
+  everyone absent from the board.
+
+Both are cheap to keep populated and available if a later model wants them.
 
 ## Roadmap
 
 Ordered by what unblocks what. Each step has a validation, because most of
-these fail silently — a biased fit still produces plausible-looking
-numbers.
+these fail silently: a biased fit still produces plausible-looking numbers.
 
 **1. Descriptive diagnostics, before fitting anything.**
 Within a stratum, take items played by many of its players, subtract each
@@ -80,84 +85,71 @@ Its eigenspectrum bounds how many latent dimensions the data can support.
 Comparing that structure *across* strata tests whether difficulty ordering
 is rank-invariant.
 *Validate:* if item A beats item B for top players but reverses at rank
-10k, a scalar model is dead on arrival — and that costs a few hundred
+10k, a scalar model is dead on arrival, and that costs a few hundred
 requests to find out rather than a month of modelling.
 
-**2. Censored likelihood.**
-Use `best_cutoff_pp` and `leaderboard_cutoff_pp` as bounds instead of
-dropping unobserved pairs. Selection is on the outcome variable, so naive
-fitting biases every observed residual upward, and differentially — worse
-for players with a wide top-100 spread.
-*Validate:* fit on an artificially truncated subset of a well-covered
-player and check the estimate recovers the untruncated one.
+**2. High-confidence backbone.**
+Establish reliable reference regions from large maps with diverse player
+populations and from players who overlap across many maps.
+*Validate:* bootstrap the data and confirm established map and player
+estimates barely move.
 
-**3. Attempt counts as a covariate.**
-Pull `/users/{id}/beatmapsets/most_played` and put attempt count in the
-model. See the confound below; this has to land before farm detection
-means anything.
-*Validate:* the ability estimate for a high-playcount player should drop
-relative to a low-playcount peer with the same top-100.
+**3. Scalar joint model with the gauge fixed explicitly.**
+Infer ability and difficulty together. When evidence says a map is easier
+than currently valued, lower it, recompute affected players, and iterate
+toward equilibrium. Keep it one-sided at first: detect overvaluation
+confidently, without trying to rescue underrated maps.
 
-**4. Scalar joint model with the gauge fixed explicitly.**
 Ability and difficulty are unidentifiable up to a shift (and a scale), so
-pin an anchor set or renormalize each iteration. A deflate-only update
-rule ratchets: iterate it and the whole scale drifts down while relative
-order — the only thing that matters — stays put.
-*Validate:* reproduce known leaderboard orderings; bootstrap and confirm
-established estimates barely move.
+pin an anchor set or renormalize each iteration. A deflate-only update rule
+ratchets: iterate it and the whole scale drifts down while relative order,
+which is what the output actually depends on, stays put.
+*Validate:* known farm maps deflate while unrelated established maps stay
+stable.
 
-**5. Uncertainty on every inferred quantity.**
-Uncertain entities must not strongly validate other uncertain entities.
-*Validate:* a synthetic isolated cluster stays high-σ no matter how dense
-it gets internally.
+**4. Uncertainty on every inferred quantity.**
+New maps, new players, and weak latent factors stay uncertain. Uncertain
+entities must not strongly validate other uncertain entities.
 
-**6. Discrepancy against official pp.**
-This is the actual deliverable, and it's what makes "farm" non-circular —
+**5. Discrepancy against official pp.**
+This is the actual deliverable, and it's what makes "farm" non-circular.
 pp is the observed quantity, empirical difficulty is inferred
-independently, farm is the gap.
+independently, and farm is the gap between them.
 *Validate:* known farm maps show large positive discrepancy while
 established maps stay near zero.
 
-**7. Latent factors, cautiously.**
-Mods, AR, and scoring system are *observed* covariates so factors don't
-waste themselves rediscovering "has +HD". Shrink unsupported factors to
-zero.
+**6. Latent factors, cautiously.**
+Learn correlations in residual performance rather than declaring aim/speed
+by hand. Mods, AR, and scoring system are *observed* covariates so factors
+don't waste themselves rediscovering "has +HD". Shrink unsupported factors
+to zero.
 *Validate:* leave-map-out, leave-player-out, temporal holdout,
 cross-mapper. A factor that resolves to "mapper X players" is a failure.
 
-**8. Factor inspectability.**
-Procrustes-align each retrain against the previous one so factors don't
-arbitrarily swap meaning between runs.
-*Validate:* recognizable skill clusters recur across bootstrap runs.
+**7. Factor inspectability.**
+Periodically PCA/rotate the learned space, then Procrustes-align each
+retrain against the previous one so factors don't arbitrarily swap meaning
+between runs. Inspect the strongest player and map loadings by hand.
+*Validate:* recognizable skill clusters and specialists recur across
+retraining and bootstrap runs.
 
-**9. Staleness through variance only.**
+**8. Staleness through variance only.**
 Keep the ability mean, inflate its variance with elapsed time
-(σ²(t+Δt) = σ²(t) + qΔt).
+(σ²(t+Δt) = σ²(t) + qΔt). New evidence re-establishes confidence.
 *Validate:* inactive players become uncertain rather than automatically
 worse.
 
-**10. Uncertainty-driven fetching — last.**
+**9. Uncertainty-driven fetching, last.**
 Deliberately after a validated likelihood. Active learning before then
 creates a co-adaptation loop: the sampler stops fetching a region, the
 model reads the absence as certainty, and the region freezes. Prefer
 observations that *connect* uncertain regions to established ones over
 observations inside the uncertain cluster.
-*Validate:* measure expected vs. actual posterior-variance reduction per
-fetched score.
+*Validate:* measure expected against actual posterior-variance reduction
+per fetched score.
 
-The success criterion for the whole thing: a newly discovered farm pattern
-starts uncertain, becomes confidently identified once enough well-connected
-players demonstrate systematic overperformance, gets devalued, drags down
-the ratings that depended on it, and propagates none of that into
-unrelated parts of the graph.
-
-## Known confound, not yet handled
-
-Best-of-*n* is a max-statistic: the max over *n* attempts grows about
-σ√(2 ln n), so a player who ran a map 400 times has a higher expected best
-than an identically skilled player who ran it 4 times. Unmodelled, map
-difficulty absorbs popularity and player ability absorbs grind — which is
-fatal for farm detection, since "farm map" and "map people retry" become
-the same signal. `/users/{id}/beatmapsets/most_played` exposes per-player
-per-map attempt counts, so this is observable and should enter the model as
-a covariate rather than being retrofitted later.
+The success criterion for the whole system: a newly discovered farm pattern
+should start uncertain. Once enough well-connected players demonstrate
+systematic overperformance, it should be confidently identified and
+devalued. Ratings that depended on it should fall with it, and nothing in
+unrelated parts of the graph should move.
