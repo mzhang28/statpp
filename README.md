@@ -104,6 +104,11 @@ is only internally comparable. A 404 is an observation here rather than a
 wasted request, because it says the player has never submitted a play on
 the map.
 
+A probe asks for every score the player has submitted on the map, not only
+their best. The item is `(beatmap, mod_key)`, so one map carries several
+items, and the mod combinations are spread widely enough that no single one
+dominates. Asking for all of them costs the same single request.
+
 Probes are recorded in `Probe` whether or not a score comes back, so a miss
 is never requested twice.
 

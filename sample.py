@@ -96,6 +96,19 @@ DEEP_COUNTRIES = [
     "CL", "UA", "NL", "FI", "SE", "AR", "TR", "SG", "HK", "NO",
 ]
 
+# Maps probed against every player in every stratum rather than only the
+# stratum that plays them. Strata share almost no map vocabulary once they
+# are far apart, which leaves each one's scale comparable only inside
+# itself. A map with tens of millions of plays is the exception: nearly
+# everyone at every rank has played it, so it forms one column spanning the
+# whole ability range and ties those separate scales together.
+# Several of them, spread over star rating, because one map is only ever the
+# right difficulty for part of the range: a map a rank-400k player cannot
+# pass records a miss for them and bridges nothing. These are three
+# difficulties of Reol - No title, 10-16M plays each:
+# 713818 byfaR's Hard 3.53*, 712376 Insane 5.10*, 714001 jieusieu's Lemur 6.61*.
+SEED_MAPS = [713818, 712376, 714001]
+
 # Keep the initial graph focused on things relevant to performance ratings.
 INTERESTING_STATUSES = {"ranked", "approved"}
 
@@ -812,6 +825,19 @@ def proposed_pages(n):
     """
     have = {(s.country, s.page) for s in select(s for s in Stratum)}
 
+    # Widening and bisecting both work from strata that already exist, so
+    # on an empty database only the deepest country pages would ever be
+    # proposed and the global ladder would never be laid. Lay it first,
+    # and all of it, since it is the spine the other policies extend.
+    spine = [
+        (country or None, page)
+        for country, page in DEFAULT_PAGES
+        if (country or "", page) not in have
+    ]
+
+    if spine:
+        return spine
+
     policies = [widen_pages(have), bisect_pages(have), deepen_pages(have)]
 
     chosen = []
@@ -1012,8 +1038,25 @@ async def crawl_map(api, beatmap_id):
 # Panel filling
 # ---------------------------------------------------------------------------
 
+async def ensure_beatmaps(api, beatmap_ids):
+    """
+    Seed maps are chosen by hand, so they need not have surfaced in anyone's
+    top-100 yet, and a probe cannot reference a map the database lacks.
+    """
+    with db_session:
+        missing = [b for b in beatmap_ids if Beatmap.get(id=b) is None]
+
+    for beatmap_id in missing:
+        data = await api.get(f"/beatmaps/{beatmap_id}")
+
+        with db_session:
+            upsert_beatmap(data)
+
+    return missing
+
+
 @db_session
-def stratum_panels(n_items, n_users, rng):
+def stratum_panels(n_items, n_users, rng, seeds=()):
     """
     One rectangle per stratum: the maps that stratum plays, against its
     own players.
@@ -1064,6 +1107,10 @@ def stratum_panels(n_items, n_users, rng):
         # Play counts tie heavily down the tail, so break ties on id:
         # otherwise the panel changes between runs at the same seed.
         items = sorted(counts, key=lambda b: (-len(counts[b]), b))[:n_items]
+
+        # Seed maps join every stratum and go first, so the columns that
+        # span the whole ability range are the ones a short run completes.
+        items = list(seeds) + [b for b in items if b not in set(seeds)]
 
         if items and users:
             panels.append((label, items, users))
@@ -1210,38 +1257,45 @@ def fill_order(panels, known, explore_fraction, budget, rng):
 
 
 async def probe_cell(api, beatmap_id, user_id):
+    """
+    Every score this player has submitted on this map, not just their best.
+
+    The modelled item is (beatmap, mod_key), so one map holds several
+    items and a player can have a score on more than one of them. The
+    /all endpoint returns each mod combination separately for the same
+    single request, which is what makes a probed column complete for
+    every item on the map rather than for one of them.
+    """
     try:
         payload = await api.get(
-            f"/beatmaps/{beatmap_id}/scores/users/{user_id}",
+            f"/beatmaps/{beatmap_id}/scores/users/{user_id}/all",
             mode="osu",
             legacy_only=0,
         )
-    except NotFound:
-        with db_session:
-            Probe(
-                player=Player[user_id],
-                beatmap=Beatmap[beatmap_id],
-                found=False,
-                probed_at=utcnow(),
-            )
-        return False
+        scores = payload.get("scores") or []
 
-    score = payload.get("score")
+    except NotFound:
+        # A player with no play on the map is the common case here, and
+        # recording it is the point: it is an answer, not a failure.
+        scores = []
 
     with db_session:
         beatmap = Beatmap[beatmap_id]
+        player = Player[user_id]
 
-        if score:
-            ingest_score(score, beatmap, source="probe")
+        for score in scores:
+            # We asked about this player, so don't depend on the response
+            # carrying them back.
+            ingest_score(score, beatmap, source="probe", known_player=player)
 
         Probe(
-            player=Player[user_id],
+            player=player,
             beatmap=beatmap,
-            found=bool(score),
+            found=bool(scores),
             probed_at=utcnow(),
         )
 
-    return bool(score)
+    return bool(scores)
 
 
 def hit_rates(done, found):
@@ -1252,10 +1306,17 @@ def hit_rates(done, found):
     )
 
 
-async def fill_panel(api, n_items, n_users, explore_fraction, seed, limit=None):
+async def fill_panel(
+    api, n_items, n_users, explore_fraction, seed, seeds=(), limit=None
+):
     rng = random.Random(seed)
 
-    panels = stratum_panels(n_items, n_users, rng)
+    fetched = await ensure_beatmaps(api, seeds)
+
+    if fetched:
+        print(f"fetched {len(fetched)} seed map(s) not yet in the database")
+
+    panels = stratum_panels(n_items, n_users, rng, seeds)
 
     if not panels:
         print("Nothing to fill: expand some players first.")
@@ -1353,6 +1414,7 @@ async def grow(api, args):
             args.fill_users,
             args.fill_explore,
             args.seed,
+            seeds=parse_seed_maps(args.seed_maps),
             limit=args.grow_cycle,
         )
 
@@ -1535,6 +1597,10 @@ def parse_pages(spec):
     return [p for p in pages if not (p in seen or seen.add(p))]
 
 
+def parse_seed_maps(spec):
+    return [int(part) for part in spec.split(",") if part.strip()]
+
+
 def fraction(value):
     """A share of the run, so 1.0 is excluded: it would leave no core."""
     x = float(value)
@@ -1625,6 +1691,14 @@ def main():
     )
 
     parser.add_argument(
+        "--seed-maps",
+        default=",".join(str(b) for b in SEED_MAPS),
+        help="beatmap IDs probed against every player in every stratum, "
+             "comma separated. A map nearly everyone has played is the one "
+             "column that reaches across the whole ability range",
+    )
+
+    parser.add_argument(
         "--grow-pages",
         type=int,
         default=4,
@@ -1665,6 +1739,7 @@ async def run(args):
                     args.fill_users,
                     args.fill_explore,
                     args.seed,
+                    seeds=parse_seed_maps(args.seed_maps),
                 )
 
             elif args.command == "grow":
