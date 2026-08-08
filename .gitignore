@@ -16,5 +16,7 @@ statpp.db
 __pycache__/
 *.sqlite
 *.sqlite.bak
+*.sqlite-wal
+*.sqlite-shm
 
 /styles
