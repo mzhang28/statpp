@@ -48,6 +48,7 @@ budget still leaves balanced coverage instead of a depth-first dive into
 the top stratum.
 
 ```
+uv run sample.py grow       # sample and fill in one process, until the budget ends
 uv run sample.py sample     # fetch strata, expand players' top-100s
 uv run sample.py fill       # probe (player, map) cells to densify the panel
 uv run sample.py report     # coverage + inter-stratum item overlap
@@ -55,6 +56,33 @@ uv run sample.py maps ID... # top-50 leaderboard for specific maps
 ```
 
 Requires `OSU_CLIENT_ID` / `OSU_CLIENT_SECRET` in `.env`.
+
+### Growing the graph
+
+`sample` and `fill` are both re-runnable and additive. `sample` widens the
+space, `fill` densifies it, and neither re-requests anything already
+stored, so running either again picks up where the last run stopped.
+`grow` alternates the two until the request budget ends.
+
+They share a process rather than running as a pair, because the rate
+limiter is per-process: a sampler and a filler side by side would each
+pace themselves to 57 requests per minute and put the pair over the
+60/minute cap.
+
+A ranking page holds exactly 50 players, which caps how dense a single
+stratum can get, so widening the space means sampling new pages. `grow`
+proposes them by rotating between policies, skipping every page already
+stored:
+
+- Pages beside an existing stratum, which add players at nearly the same
+  ability and so raise the number available to co-play one map.
+- The geometric midpoint of the widest gap in a country's ladder, which is
+  where the chain of shared map vocabulary is thinnest.
+- The deepest page of a country not yet sampled, biggest playerbase first,
+  since page 200 of a small country holds dead accounts.
+
+Each cycle expands before it fills, because new strata bring new players
+and those players widen the panel the filling stage then works on.
 
 ### Filling the panel
 

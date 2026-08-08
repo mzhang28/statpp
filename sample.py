@@ -87,6 +87,15 @@ DEFAULT_PAGES = [
     ("ID", 200),    # ~#438k
 ]
 
+# Countries to reach below global rank ~10k with, roughly by playerbase
+# size. Order matters more than membership: page 200 of a small country is
+# dead accounts, not low-ranked players, so the big ones get used first.
+DEEP_COUNTRIES = [
+    "US", "RU", "PH", "ID", "BR", "DE", "PL", "FR", "GB", "JP",
+    "TH", "MY", "KR", "CA", "TW", "VN", "MX", "IT", "ES", "AU",
+    "CL", "UA", "NL", "FI", "SE", "AR", "TR", "SG", "HK", "NO",
+]
+
 # Keep the initial graph focused on things relevant to performance ratings.
 INTERESTING_STATUSES = {"ranked", "approved"}
 
@@ -731,6 +740,101 @@ async def fetch_strata(api, pages, per_stratum, seed):
         await fetch_stratum(api, country, page, per_stratum, rng)
 
 
+def widen_pages(have):
+    """
+    Pages next to one already sampled.
+
+    A ranking page holds exactly 50 players, which caps how dense a single
+    stratum can get. The page beside it covers nearly the same ability, so
+    it raises the number of players available to co-play any given map,
+    which is what a within-stratum correlation is short of.
+    """
+    for country, page in sorted(have):
+        for step in (-1, 1):
+            neighbour = (country, page + step)
+
+            if 1 <= neighbour[1] <= MAX_RANKING_PAGE and neighbour not in have:
+                yield neighbour
+
+
+def bisect_pages(have):
+    """
+    Geometric midpoints of the widest gaps in each country's ladder.
+
+    Adjacent strata have to share map vocabulary for the joint scale to be
+    identifiable, and the widest gap in log rank is where that chain is
+    thinnest. Widest gap first, so the weakest link is addressed first.
+    """
+    by_country = defaultdict(list)
+
+    for country, page in have:
+        by_country[country].append(page)
+
+    gaps = []
+
+    for country, pages in by_country.items():
+        pages.sort()
+
+        for low, high in zip(pages, pages[1:]):
+            mid = int((low * high) ** 0.5)
+
+            if low < mid < high and (country, mid) not in have:
+                gaps.append((high / low, country, mid))
+
+    for _, country, page in sorted(gaps, reverse=True):
+        yield (country, page)
+
+
+def deepen_pages(have):
+    """
+    The deepest page of a country not yet sampled.
+
+    Country rankings are the only way below global rank ~10k. Biggest
+    playerbase first, because page 200 of a small country is dead accounts
+    rather than low-ranked players.
+    """
+    sampled = {country for country, _ in have}
+
+    for country in DEEP_COUNTRIES:
+        if country not in sampled:
+            yield (country, MAX_RANKING_PAGE)
+
+
+@db_session
+def proposed_pages(n):
+    """
+    Ranking pages worth sampling that have not been sampled yet.
+
+    The three policies buy different things, so they take turns rather
+    than one running to exhaustion first. Every candidate is checked
+    against what is already stored, so repeated runs keep proposing new
+    pages instead of the same page forever.
+    """
+    have = {(s.country, s.page) for s in select(s for s in Stratum)}
+
+    policies = [widen_pages(have), bisect_pages(have), deepen_pages(have)]
+
+    chosen = []
+    taken = set()
+
+    while len(chosen) < n and policies:
+        for policy in list(policies):
+            if len(chosen) >= n:
+                break
+
+            for candidate in policy:
+                if candidate not in have and candidate not in taken:
+                    taken.add(candidate)
+                    chosen.append(candidate)
+                    break
+            else:
+                # Exhausted, so stop asking it.
+                policies.remove(policy)
+
+    # Global strata are stored with an empty country, the API wants none.
+    return [(country or None, page) for country, page in chosen]
+
+
 # ---------------------------------------------------------------------------
 # Player expansion
 # ---------------------------------------------------------------------------
@@ -1148,7 +1252,7 @@ def hit_rates(done, found):
     )
 
 
-async def fill_panel(api, n_items, n_users, explore_fraction, seed):
+async def fill_panel(api, n_items, n_users, explore_fraction, seed, limit=None):
     rng = random.Random(seed)
 
     panels = stratum_panels(n_items, n_users, rng)
@@ -1161,13 +1265,15 @@ async def fill_panel(api, n_items, n_users, explore_fraction, seed):
         {b for _, block_items, _ in panels for b in block_items}
     )
 
-    order = fill_order(
-        panels,
-        known,
-        explore_fraction,
-        api.max_requests - api.requests_used,
-        rng,
-    )
+    budget = api.max_requests - api.requests_used
+
+    if limit is not None:
+        budget = min(budget, limit)
+
+    order = fill_order(panels, known, explore_fraction, budget, rng)
+
+    if limit is not None:
+        order = order[:limit]
 
     if not order:
         print("Nothing to fill: every panel cell already has a score or probe.")
@@ -1204,6 +1310,57 @@ async def fill_panel(api, n_items, n_users, explore_fraction, seed):
     await run_pool(one, order)
 
     print(f"        {sum(done.values())} probed, {hit_rates(done, found)}")
+
+
+# ---------------------------------------------------------------------------
+# Growing the graph
+# ---------------------------------------------------------------------------
+
+async def grow(api, args):
+    """
+    Expand the space and densify it, alternating, until the budget runs out.
+
+    One process rather than two, because the rate limiter is per-process:
+    a sampler and a filler running side by side would each pace themselves
+    to 57 requests/minute and put the pair over the 60/minute cap.
+
+    Expansion comes first in each cycle. New strata bring new players, and
+    those players widen the panel that the filling stage then works on, so
+    running it the other way round would fill a panel that is about to
+    change.
+    """
+    cycle = 0
+
+    while True:
+        cycle += 1
+        before = api.requests_used
+
+        pages = proposed_pages(args.grow_pages)
+
+        if pages:
+            print(f"\n=== cycle {cycle}: {len(pages)} new pages ===")
+
+            await fetch_strata(api, pages, args.per_stratum, args.seed)
+            await expand_players(api)
+        else:
+            print(f"\n=== cycle {cycle}: no unsampled pages left ===")
+
+        print(f"=== cycle {cycle}: filling ===")
+
+        await fill_panel(
+            api,
+            args.fill_items,
+            args.fill_users,
+            args.fill_explore,
+            args.seed,
+            limit=args.grow_cycle,
+        )
+
+        # Neither stage found anything to request, so another cycle would
+        # do the same nothing again.
+        if api.requests_used == before:
+            print("\nNothing left to expand or fill.")
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -1393,13 +1550,14 @@ def main():
 
     parser.add_argument(
         "command",
-        choices=["sample", "report", "maps", "fill"],
+        choices=["sample", "report", "maps", "fill", "grow"],
         nargs="?",
         default="sample",
         help="sample: fetch strata and expand players; "
              "report: stratum coverage and overlap; "
              "maps: crawl leaderboards for the given beatmap IDs; "
-             "fill: densify the panel by probing (player, map) cells",
+             "fill: densify the panel by probing (player, map) cells; "
+             "grow: alternate sampling and filling until the budget ends",
     )
 
     parser.add_argument(
@@ -1466,6 +1624,20 @@ def main():
              "per-stratum rectangles, which are what bridge strata",
     )
 
+    parser.add_argument(
+        "--grow-pages",
+        type=int,
+        default=4,
+        help="new ranking pages `grow` adds per cycle",
+    )
+
+    parser.add_argument(
+        "--grow-cycle",
+        type=int,
+        default=2000,
+        help="cells `grow` probes per cycle before expanding again",
+    )
+
     args = parser.parse_args()
 
     bind_db(args.db)
@@ -1494,6 +1666,9 @@ async def run(args):
                     args.fill_explore,
                     args.seed,
                 )
+
+            elif args.command == "grow":
+                await grow(api, args)
 
             else:
                 await fetch_strata(
