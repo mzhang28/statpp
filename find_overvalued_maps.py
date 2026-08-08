@@ -35,6 +35,7 @@ from fit_ability_and_difficulty import (
     observations,
 )
 from sample import connect_readonly
+from star_ratings import star_rating
 
 
 def beatmap_facts(conn):
@@ -47,26 +48,56 @@ def beatmap_facts(conn):
     }
 
 
+def rating_for(beatmap_id, mods, facts):
+    """
+    Star rating with the mods applied.
+
+    Computed from the map file, except for unmodded play: the rating the
+    API stores is already the unmodded one, so NM needs no file and is
+    available for every map from the start.
+    """
+    computed = star_rating(beatmap_id, mods)
+
+    if computed is not None:
+        return computed
+
+    if mods == "NM":
+        return facts[beatmap_id][0]
+
+    return None
+
+
 def expected_pp(stars, local_pp, window, min_neighbours):
     """
-    What maps of about this star rating are worth, from those maps alone.
+    What maps of about this star rating are worth, from those maps alone,
+    and how well that baseline is pinned down.
 
     A curve fitted across a whole mod combination extrapolates at the ends
     of its star range, and the ends are exactly where the sparsest maps
     sit. Comparing each map only against others within `window` stars of
     it keeps every comparison local, and returns nothing at all for a map
     with too few neighbours rather than an invented number.
+
+    The error on the baseline comes from how much the neighbours disagree
+    with each other, since maps of equal rating are genuinely worth
+    different amounts and that spread is the thing a single map has to
+    stand out against. The 1.253 turns the spread of the values into the
+    spread of their median.
     """
     expected = np.full(len(stars), np.nan)
+    error = np.full(len(stars), np.nan)
 
     for i, rating in enumerate(stars):
         near = np.abs(stars - rating) <= window
         near[i] = False
 
-        if near.sum() >= min_neighbours:
-            expected[i] = np.median(local_pp[near])
+        count = int(near.sum())
 
-    return expected
+        if count >= min_neighbours:
+            expected[i] = np.median(local_pp[near])
+            error[i] = 1.253 * local_pp[near].std() / np.sqrt(count)
+
+    return expected, error
 
 
 def main():
@@ -96,6 +127,13 @@ def main():
         type=int,
         default=8,
         help="maps of similar rating needed before a comparison is made",
+    )
+
+    parser.add_argument(
+        "--mods",
+        default="",
+        help="show these mod combinations separately, joining mods with + "
+             "and separating combinations with a comma, as in NM,HD,DT+HD",
     )
 
     parser.add_argument("--iterations", type=int, default=200)
@@ -155,28 +193,57 @@ def main():
             by_mods[mods].append((j, beatmap_id))
 
     gaps = {}
+    missing = {}
+    modded_stars = {}
 
     for mods, group in sorted(by_mods.items(), key=lambda kv: -len(kv[1])):
-        if len(group) < args.min_group:
+        # The stored rating is the unmodded one, and DT moves a map by two
+        # stars or more, so a DT score has to be placed against the rating
+        # of the map as it was actually played. That is what osu! computes
+        # pp from.
+        rated = [
+            (j, b, rating)
+            for j, b, rating in (
+                (j, b, rating_for(b, mods, facts)) for j, b in group
+            )
+            if rating is not None
+        ]
+
+        missing[mods] = len(group) - len(rated)
+
+        if len(rated) < args.min_group:
             continue
 
-        index = np.array([j for j, _ in group])
-        stars = np.array([facts[b][0] for _, b in group], dtype=float)
+        index = np.array([j for j, _, _ in rated])
+        stars = np.array([s for _, _, s in rated], dtype=float)
 
-        predicted = expected_pp(
+        predicted, baseline_error = expected_pp(
             stars, local_pp[index], args.star_window, args.min_neighbours
         )
 
         for spot, j in enumerate(index):
-            if not np.isnan(predicted[spot]):
-                gaps[j] = (local_pp[j] - predicted[spot], predicted[spot], mods)
+            modded_stars[j] = stars[spot]
+
+            if np.isnan(predicted[spot]):
+                continue
+
+            # The map's own error and the baseline's, added in quadrature
+            # because they come from different maps' scores.
+            error = float(
+                np.hypot(local_pp_sd[j], baseline_error[spot])
+            )
+
+            gaps[j] = (
+                local_pp[j] - predicted[spot], predicted[spot], mods, error
+            )
 
         compared = int(np.isfinite(predicted).sum())
 
         print(
-            f"  {mods:<12} {len(group):>4} maps, "
-            f"{stars.min():.1f}-{stars.max():.1f} stars, "
+            f"  {mods:<12} {len(rated):>4} maps, "
+            f"{stars.min():.1f}-{stars.max():.1f} stars with mods, "
             f"{compared} with enough neighbours"
+            + (f", {missing[mods]} without a rating" if missing[mods] else "")
         )
 
     if not gaps:
@@ -190,20 +257,50 @@ def main():
 
     header = (
         f"{'beatmap':>9} {'mods':<9}{'stars':>6}{'players':>8}"
-        f"{'osu live pp':>12}{'local pp':>10}{'delta':>8}  difficulty"
+        f"{'osu live pp':>12}{'local pp':>10}{'delta':>8}{'+/-':>6}"
+        f"{'sigma':>7}  difficulty"
     )
 
     def show(j):
-        gap, _, mods = gaps[j]
+        gap, _, mods, error = gaps[j]
         beatmap_id = int(items[j].split(":", 1)[0])
-        stars, version = facts[beatmap_id]
+        _, version = facts[beatmap_id]
 
         print(
-            f"{beatmap_id:>9} {mods:<9}{stars:>6.2f}"
+            f"{beatmap_id:>9} {mods:<9}{modded_stars[j]:>6.2f}"
             f"{len(holders[items[j]]):>8}"
             f"{live[j]:>12.0f}{live[j] - gap:>10.0f}{gap:>+8.0f}"
-            f"  {version[:28]}"
+            f"{error:>6.0f}{gap / error:>7.1f}"
+            f"  {version[:26]}"
         )
+
+    wanted = [
+        ",".join(sorted(part.strip().split("+")))
+        for part in args.mods.split(",")
+        if part.strip()
+    ]
+
+    if wanted:
+        for mods in wanted:
+            picked = [j for j in order if gaps[j][2] == mods]
+
+            print()
+            print(
+                f"{mods}: worth more pp than the star rating warrants"
+                if picked else f"{mods}: no maps compared"
+            )
+
+            if not picked:
+                continue
+
+            print()
+            print(header)
+            print("-" * 88)
+
+            for j in picked[:args.top]:
+                show(j)
+
+        return
 
     print()
     print("maps worth more pp than their star rating warrants")
