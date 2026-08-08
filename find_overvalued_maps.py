@@ -140,6 +140,10 @@ def main():
         ability, payout, args.uncertainty_iterations,
     )
 
+    # What osu actually awarded on each map, in plain pp.
+    live = np.bincount(cols, weights=values, minlength=len(items))
+    live /= np.maximum(np.bincount(cols, minlength=len(items)), 1)
+
     print(f"core: {len(roster)} players, {len(items)} maps-with-mods")
 
     by_mods = defaultdict(list)
@@ -185,42 +189,40 @@ def main():
 
     order = sorted(gaps, key=lambda j: -gaps[j][0])
 
-    print()
-    print("maps paying most above their star rating")
-    print()
-    print(
+    header = (
         f"{'beatmap':>9} {'mods':<9}{'stars':>6}{'players':>8}"
-        f"{'pays':>8}{'rating says':>12}{'gap':>8}  difficulty"
+        f"{'osu live pp':>12}{'local pp':>10}{'delta':>8}  difficulty"
     )
-    print("-" * 84)
+
+    def show(j):
+        gap, _, mods = gaps[j]
+        beatmap_id = int(items[j].split(":", 1)[0])
+        stars, version = facts[beatmap_id]
+
+        print(
+            f"{beatmap_id:>9} {mods:<9}{stars:>6.2f}"
+            f"{len(holders[items[j]]):>8}"
+            f"{live[j]:>12.0f}{live[j] - gap:>10.0f}{gap:>+8.0f}"
+            f"  {version[:28]}"
+        )
+
+    print()
+    print("maps osu pays more for than their star rating warrants")
+    print()
+    print(header)
+    print("-" * 88)
 
     for j in order[:args.top]:
-        gap, predicted, mods = gaps[j]
-        beatmap_id = int(items[j].split(":", 1)[0])
-        stars, version = facts[beatmap_id]
-
-        print(
-            f"{beatmap_id:>9} {mods:<9}{stars:>6.2f}"
-            f"{len(holders[items[j]]):>8}"
-            f"{payout[j]:>8.0f}{predicted:>12.0f}{gap:>+8.0f}"
-            f"  {version[:28]}"
-        )
+        show(j)
 
     print()
-    print("and paying least, which is the other end of the same measure")
+    print("and the other end of the same measure")
     print()
+    print(header)
+    print("-" * 88)
 
     for j in order[::-1][:5]:
-        gap, predicted, mods = gaps[j]
-        beatmap_id = int(items[j].split(":", 1)[0])
-        stars, version = facts[beatmap_id]
-
-        print(
-            f"{beatmap_id:>9} {mods:<9}{stars:>6.2f}"
-            f"{len(holders[items[j]]):>8}"
-            f"{payout[j]:>8.0f}{predicted:>12.0f}{gap:>+8.0f}"
-            f"  {version[:28]}"
-        )
+        show(j)
 
     spread = np.array([gaps[j][0] for j in gaps])
 
