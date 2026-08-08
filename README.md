@@ -158,11 +158,15 @@ is rank-invariant.
 10k, a scalar model is dead on arrival, and that costs a few hundred
 requests to find out rather than a month of modelling.
 
-**2. High-confidence backbone.**
-Establish reliable reference regions from large maps with diverse player
-populations and from players who overlap across many maps.
-*Validate:* bootstrap the data and confirm established map and player
-estimates barely move.
+**2. Find the part of the graph worth fitting on.**
+Players and maps are the two sides of a bipartite graph and an observed
+score is an edge. Fitting ability and difficulty together only works where
+that graph is connected and dense: two players in separate components share
+no chain of maps, so nothing in the data says how their abilities compare.
+Measure the components, how deep the k-core goes, and the density inside
+it, then fit on the part that holds up.
+*Validate:* the core is a single component, so every player and map in it
+reaches every other through shared plays.
 
 **3. Scalar joint model with the gauge fixed explicitly.**
 Infer ability and difficulty together. When evidence says a map is easier

@@ -3,29 +3,33 @@
 Find the part of the collected data that is worth fitting on.
 
 Most of it is thin: an item held by three players, a player holding two
-items. Anything fitted on that is guesswork. This finds the part that
-isn't, so later work has somewhere to start.
+items. Fitting ability and difficulty together needs observations that
+link players to each other through shared items, so what matters is how
+connected the player/item graph is, not how many rows it has.
 
-Two filters. The first is a k-core: drop items held by fewer than
---min-players and players holding fewer than --min-items, repeatedly,
-since each drop pushes the other side under its threshold. The second
-keeps items whose players come from more than one stratum, because an
-item held inside a single stratum cannot be placed against the rest of
-the ability range.
+Three things get measured.
 
-Then it resamples players with replacement and recomputes each item's
-mean residual, to show how far the number moves. An item carried by a
-few players swings; that is worth seeing before using its value for
-anything. This measures the sample, not the model, and no model is
-fitted here.
+Connected components: two players in different components share no chain
+of items at all, so nothing in the data says how their abilities compare.
+A fit over several components produces one arbitrary offset per
+component.
+
+The k-core: drop items held by fewer than k players and players holding
+fewer than k items, repeatedly, since each drop pushes the other side
+under the threshold. The largest k that leaves anything is how deeply
+connected the data is. Sweeping k shows how fast the graph thins out.
+
+Density inside the core: what share of the player-by-item rectangle is
+actually observed. That is the number the sampler moves.
+
+Also prints each item's mean residual, which is how far players score
+above or below their own average on it.
 
 Reads through connect_readonly(), so it runs while the sampler writes.
 """
 
 import argparse
 from collections import defaultdict
-
-import numpy as np
 
 from diagnose import load_scores, residuals, trim
 from sample import connect_readonly
@@ -60,44 +64,72 @@ def coverage(players, stratum_of):
     return holders, strata
 
 
-def item_means(residual, subset=None):
+def components(players):
     """
-    Mean residual per item: how far players fall below or rise above
-    their own level on it. Lower means harder than the rest of what they
-    play.
+    Sizes of the connected components of the player/item graph.
+
+    Players and items are both nodes; an observation is an edge. One
+    component means every player is reachable from every other through
+    shared items, which is what a single joint scale requires.
     """
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+
+        if ra != rb:
+            parent[ra] = rb
+
+    for player, items in players.items():
+        for key in items:
+            union(("player", player), ("item", key))
+
+    sizes = defaultdict(int)
+
+    for node in list(parent):
+        sizes[find(node)] += 1
+
+    return sorted(sizes.values(), reverse=True)
+
+
+def core_depth(players, limit=200):
+    """How far the k-core survives, and its size at each k."""
+    rows = []
+
+    for k in range(2, limit):
+        core = trim(players, k, k)
+
+        if len(core) < 2:
+            break
+
+        items = {key for held in core.values() for key in held}
+        cells = sum(len(v) for v in core.values())
+
+        rows.append((k, len(core), len(items), cells, cells / (len(core) * len(items))))
+
+    return rows
+
+
+def item_means(residual):
+    """Mean residual per item, and how many players it rests on."""
     totals = defaultdict(float)
     counts = defaultdict(int)
 
-    for player in (subset if subset is not None else residual):
-        for key, value in residual[player].items():
+    for items in residual.values():
+        for key, value in items.items():
             totals[key] += value
             counts[key] += 1
 
-    return {key: totals[key] / counts[key] for key in totals}
-
-
-def resample(residual, replicates, rng):
-    """
-    Spread of each item's mean under resampling players with replacement.
-
-    Players are the unit resampled, because players are what the sampler
-    drew. An item held up by three of them moves a long way when those
-    three are redrawn.
-    """
-    roster = sorted(residual)
-    spread = defaultdict(list)
-
-    for _ in range(replicates):
-        drawn = [roster[i] for i in rng.integers(0, len(roster), len(roster))]
-
-        for key, value in item_means(residual, drawn).items():
-            spread[key].append(value)
-
-    return {
-        key: (float(np.mean(v)), float(np.std(v)))
-        for key, v in spread.items()
-    }
+    return {key: (totals[key] / counts[key], counts[key]) for key in totals}
 
 
 def main():
@@ -119,21 +151,7 @@ def main():
         help="items a player needs to stay in the core",
     )
 
-    parser.add_argument(
-        "--min-strata",
-        type=int,
-        default=4,
-        help="strata an item's players must span to be kept",
-    )
-
-    parser.add_argument(
-        "--resample",
-        type=int,
-        default=200,
-        help="resampling replicates",
-    )
-
-    parser.add_argument("--top", type=int, default=20, help="rows to print")
+    parser.add_argument("--top", type=int, default=15, help="rows to print")
 
     parser.add_argument(
         "--collapse-mods",
@@ -151,94 +169,97 @@ def main():
         return
 
     cells = sum(len(v) for v in players.values())
-    items = len({k for v in players.values() for k in v})
+    items = {key for held in players.values() for key in held}
 
-    print(f"all data: {len(players)} players, {items} items, {cells} observations")
+    print(
+        f"all data: {len(players)} players, {len(items)} items, "
+        f"{cells} observations, "
+        f"density {cells / (len(players) * len(items)):.2%}"
+    )
+
+    sizes = components(players)
+
+    print(
+        f"components: {len(sizes)}, largest holds "
+        f"{sizes[0]} of {len(players) + len(items)} nodes"
+        + ("" if len(sizes) == 1 else f", rest {sizes[1:args.top + 1]}")
+    )
+
+    print()
+    print("how far the k-core survives")
+    print()
+    print(f"{'k':>4}{'players':>9}{'items':>8}{'observations':>14}{'density':>9}")
+    print("-" * 44)
+
+    depth = core_depth(players)
+
+    if not depth:
+        print("  nothing survives k=2; the graph is still isolated points")
+        return
+
+    for k, n_players, n_items, n_cells, density in depth:
+        if k % 5 == 0 or k in (2, 3, depth[-1][0]):
+            print(
+                f"{k:>4}{n_players:>9}{n_items:>8}{n_cells:>14}{density:>8.1%}"
+            )
+
+    print(f"\ndeepest k-core: k={depth[-1][0]}")
 
     core = trim(players, args.min_players, args.min_items)
 
     if len(core) < 2:
         print(
-            f"Nothing survives {args.min_players} players x "
+            f"\nNothing survives {args.min_players} players x "
             f"{args.min_items} items. Keep filling."
         )
         return
 
     holders, strata = coverage(core, stratum_of)
     core_cells = sum(len(v) for v in core.values())
+    core_sizes = components(core)
 
+    print()
     print(
-        f"core:     {len(core)} players, {len(holders)} items, "
+        f"core at {args.min_players} players x {args.min_items} items: "
+        f"{len(core)} players, {len(holders)} items, "
         f"{core_cells} observations, "
-        f"density {core_cells / (len(core) * len(holders)):.0%}"
+        f"density {core_cells / (len(core) * len(holders)):.1%}"
+    )
+    print(
+        f"core components: {len(core_sizes)}"
+        + ("" if len(core_sizes) == 1 else f", sizes {core_sizes[:args.top]}")
     )
 
-    kept = [k for k in holders if len(strata[k]) >= args.min_strata]
+    span = sorted(len(strata[k]) for k in holders)
 
     print(
-        f"spanning {args.min_strata}+ strata: {len(kept)} of {len(holders)} items"
+        f"strata per item: median {span[len(span) // 2]}, "
+        f"min {span[0]}, max {span[-1]}"
     )
 
-    if not kept:
-        print(
-            "Nothing spans strata, so no item can be placed against the "
-            "range. The exploration cells are what produce these."
-        )
-        return
-
-    spread = resample(residuals(core), args.resample, np.random.default_rng(0))
-
-    rows = sorted(kept, key=lambda k: (spread[k][1], -len(holders[k])))
+    means = item_means(residuals(core))
+    ranked = sorted(holders, key=lambda k: -len(holders[k]))
 
     print()
-    print(f"items whose mean moves least under resampling ({args.resample}x)")
+    print("items the most players hold")
     print()
-    print(f"{'item':<18}{'players':>9}{'strata':>8}{'mean':>10}{'sd':>9}")
-    print("-" * 54)
+    print(f"{'item':<18}{'players':>9}{'strata':>8}{'mean residual':>15}")
+    print("-" * 50)
 
-    for key in rows[:args.top]:
-        mean, sd = spread[key]
+    for key in ranked[:args.top]:
+        mean, _ = means[key]
         print(
-            f"{key:<18}{len(holders[key]):>9}{len(strata[key]):>8}"
-            f"{mean:>10.1f}{sd:>9.2f}"
+            f"{key:<18}{len(holders[key]):>9}{len(strata[key]):>8}{mean:>15.1f}"
         )
 
     print()
-    print("and the ones that move most")
-    print()
-
-    for key in rows[-min(args.top, len(rows)):][::-1]:
-        mean, sd = spread[key]
-        print(
-            f"{key:<18}{len(holders[key]):>9}{len(strata[key]):>8}"
-            f"{mean:>10.1f}{sd:>9.2f}"
-        )
-
-    sds = np.array([spread[k][1] for k in kept])
-    counts = np.array([len(holders[k]) for k in kept], dtype=float)
-
-    print()
-    print(f"sd across kept items: median {np.median(sds):.2f}, worst {sds.max():.2f}")
-
-    # If more players did not mean a steadier number, the filters are not
-    # selecting for what they are meant to select for.
-    if len(counts) >= 3 and counts.std() > 0 and sds.std() > 0:
-        r = float(np.corrcoef(counts, sds)[0, 1])
-        note = "more players, less movement" if r < 0 else "more players did not help"
-        print(f"player count against sd: {r:+.2f} ({note})")
-
-    print()
-    print("players holding the most of these items")
+    print("players holding the most core items")
     print()
     print(f"{'player':<12}{'stratum':<14}{'items held':>12}")
     print("-" * 38)
 
-    keep = set(kept)
-    ranked = sorted(core, key=lambda p: -sum(1 for k in core[p] if k in keep))
-
-    for player in ranked[:args.top]:
-        held = sum(1 for k in core[player] if k in keep)
-        print(f"{player:<12}{stratum_of[player]:<14}{held:>12}")
+    for player in sorted(core, key=lambda p: -len(core[p]))[:args.top]:
+        print(f"{player:<12}{stratum_of[player]:<14}{len(core[player]):>12}")
 
 
 if __name__ == "__main__":
