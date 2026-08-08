@@ -1066,7 +1066,7 @@ def explore_cells(panels, known, n, rng):
     return sorted(chosen)
 
 
-def fill_order(panels, known, explore_fraction, rng):
+def fill_order(panels, known, explore_fraction, budget, rng):
     """
     Every cell to probe, tagged core or explore, in probing order.
 
@@ -1076,7 +1076,15 @@ def fill_order(panels, known, explore_fraction, rng):
     columns = core_columns(panels, known)
     n_core = sum(len(column) for column in columns)
 
-    n_explore = round(n_core * explore_fraction / (1 - explore_fraction))
+    # Exploration is a share of the work, and it is also what keeps a run
+    # productive after the rectangles are complete: at that point random
+    # cells are the only cells left that this command can reach, and a run
+    # given a budget should spend it rather than report nothing to do.
+    n_explore = max(
+        round(n_core * explore_fraction / (1 - explore_fraction)),
+        budget - n_core,
+    )
+
     explore = explore_cells(panels, known, n_explore, rng)
 
     order = []
@@ -1153,7 +1161,13 @@ async def fill_panel(api, n_items, n_users, explore_fraction, seed):
         {b for _, block_items, _ in panels for b in block_items}
     )
 
-    order = fill_order(panels, known, explore_fraction, rng)
+    order = fill_order(
+        panels,
+        known,
+        explore_fraction,
+        api.max_requests - api.requests_used,
+        rng,
+    )
 
     if not order:
         print("Nothing to fill: every panel cell already has a score or probe.")
