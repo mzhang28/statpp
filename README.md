@@ -61,6 +61,7 @@ run while a sampler is writing:
 ```
 uv run diagnose.py          # residual correlation within and between strata
 uv run find_good_data.py    # the part of the data worth fitting on
+uv run fit_ability_and_difficulty.py   # solve for both together
 ```
 
 Requires `OSU_CLIENT_ID` / `OSU_CLIENT_SECRET` in `.env`.
