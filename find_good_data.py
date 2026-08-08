@@ -7,20 +7,20 @@ items. Fitting ability and difficulty together needs observations that
 link players to each other through shared items, so what matters is how
 connected the player/item graph is, not how many rows it has.
 
-Three things get measured.
+Connected components come first, since two players in different ones share
+no chain of items and nothing in the data says how their abilities
+compare. With widely played seed maps in the panel this is usually one
+component, and then it stops being informative.
 
-Connected components: two players in different components share no chain
-of items at all, so nothing in the data says how their abilities compare.
-A fit over several components produces one arbitrary offset per
-component.
+The k-core is the useful measure: drop items held by fewer than k players
+and players holding fewer than k items, repeatedly, since each drop pushes
+the other side under the threshold. The largest k that leaves anything is
+how deeply connected the data is, and sweeping k shows how fast the graph
+thins out.
 
-The k-core: drop items held by fewer than k players and players holding
-fewer than k items, repeatedly, since each drop pushes the other side
-under the threshold. The largest k that leaves anything is how deeply
-connected the data is. Sweeping k shows how fast the graph thins out.
-
-Density inside the core: what share of the player-by-item rectangle is
-actually observed. That is the number the sampler moves.
+Density inside the core is what the sampler moves, and observations per
+parameter is what decides whether a joint fit has enough to work with:
+every player and every item is one parameter.
 
 Also prints each item's mean residual, which is how far players score
 above or below their own average on it.
@@ -228,6 +228,13 @@ def main():
     print(
         f"core components: {len(core_sizes)}"
         + ("" if len(core_sizes) == 1 else f", sizes {core_sizes[:args.top]}")
+    )
+
+    # One parameter per player and one per item, so this is how much
+    # evidence each unknown gets. Too few and a joint fit is guessing.
+    print(
+        f"observations per parameter: "
+        f"{core_cells / (len(core) + len(holders)):.1f}"
     )
 
     span = sorted(len(strata[k]) for k in holders)

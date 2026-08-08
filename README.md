@@ -160,13 +160,15 @@ requests to find out rather than a month of modelling.
 
 **2. Find the part of the graph worth fitting on.**
 Players and maps are the two sides of a bipartite graph and an observed
-score is an edge. Fitting ability and difficulty together only works where
-that graph is connected and dense: two players in separate components share
-no chain of maps, so nothing in the data says how their abilities compare.
-Measure the components, how deep the k-core goes, and the density inside
-it, then fit on the part that holds up.
-*Validate:* the core is a single component, so every player and map in it
-reaches every other through shared plays.
+score is an edge. How well ability and difficulty can be separated depends
+on how concentrated that graph is, so measure it: connected components, how
+deep the k-core goes, and the density inside it. Then fit on the part that
+holds up rather than on everything collected.
+
+This step measures rather than infers, so there is nothing here to validate
+against. The number that decides whether step 3 is worth starting is
+observations per parameter: one parameter per player plus one per map, and
+a core carrying only a few observations each cannot pin them down.
 
 **3. Scalar joint model with the gauge fixed explicitly.**
 Infer ability and difficulty together. When evidence says a map is easier
