@@ -144,10 +144,74 @@ than because anything currently consumes them:
 
 Both are cheap to keep populated and available if a later model wants them.
 
+## Learning a corrected score scale
+
+The fit that exists takes pp as the observation and solves pp = ability +
+difficulty. Measurements on the collected data say that form is wrong, and
+say so specifically:
+
+- A single score scatters about 80pp around the fit, which is large next to
+  the differences being measured.
+- On an easy map, pp barely moves with ability. For Reol - No title
+  [byfaR's Hard] a player's residual tracks their overall level at -0.99
+  with slope -1, meaning everyone earns about the same pp there. That map
+  says nothing about who is better, and the fit weights it like any other.
+- The discrepancy against pp tracks map length at +0.33 and playcount at
+  -0.51. Duration and how the sample was drawn are being read as farm.
+- Fitting to pp and then reporting a departure from pp measures one
+  quantity against itself.
+
+So the plan is to stop treating pp as the observation, and instead learn a
+mapping from a raw score to a scale on which players are comparable. The
+shape of that mapping comes from the data, including how scores on a map
+are spread.
+
+**Take the observation from what the player did.** Accuracy, combo against
+the map's maximum, misses and whether the play passed are all stored, and
+none of them is pp. Reduce those to one number per (player, map) that says
+how well the play went.
+
+**Let each map carry a location and a spread.** A map is described by how
+strong a player has to be to do middlingly on it, and by how sharply it
+separates players who differ in strength. The second is what the current
+model lacks: a map everyone clears equally has nothing to say, and should
+count for less rather than the same as any other. Written out, an outcome is a
+monotone function of `a_j * (ability_i - b_j)`, where `b_j` is the map's
+location and `a_j` its spread.
+
+**Do not normalise each map on its own.** Converting every map's scores to
+percentiles separately would force every map to face the same distribution
+of players, which is exactly the difficulty signal being sought. Hard maps
+are played by strong players and that is information. Location, spread and
+ability have to be solved together, so that the scores seen on a map are
+explained as the abilities of its players put through that map's function.
+
+**Use the misses and the bounds.** A probe that came back empty says the
+player has never submitted a play, and `Player.best_cutoff_pp` says every
+unseen play by that player is worth less than a known amount. Both are
+recorded and neither is currently read. Fitting them as censored
+observations rather than dropping them is what should remove the playcount
+effect above, since that effect comes from a map entering the sample only
+when someone did well on it.
+
+**Then compare against pp, with length held fixed.** Once ability and map
+difficulty sit on a scale built without pp, ask what pp osu awards at each
+position on it. Object count belongs in that comparison as its own
+term, because pp grows with it and star rating does not.
+
+*Validate:* hold out observed cells and predict them, against predicting
+them from pp directly. Check that maps everyone clears come out with a
+small spread, which for the Reol Hard is already known to be true. Then
+recompute the length and playcount correlations: if they have not fallen
+towards zero, the correction did not work.
+
 ## Roadmap
 
 Ordered by what unblocks what. Each step has a validation, because most of
 these fail silently: a biased fit still produces plausible-looking numbers.
+
+Steps 3 to 5 below describe the pp-based fit that exists now. The section
+above replaces its observation model and supersedes it where they differ.
 
 **1. Descriptive diagnostics, before fitting anything.**
 Within a stratum, take items played by many of its players, subtract each
