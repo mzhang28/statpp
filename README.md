@@ -161,22 +161,31 @@ say so specifically:
 - Fitting to pp and then reporting a departure from pp measures one
   quantity against itself.
 
-The fit that solves for ability and difficulty stays as it is. What changes
-is the number handed to it. Instead of pp, each play becomes a measure of
-how far it beat or missed what was expected of that player on that map,
-scaled so the answer means the same thing on every map.
+What replaces it is one model, not a normalisation step followed by the
+existing fit. Each map gets a conditional distribution of outcomes,
 
-**Learn what outcomes a map produces at each expected-performance level.**
-Take a player whose expected performance sits at some point on the common
-scale. The outcomes they actually record on this map form a distribution,
-and that distribution is what to estimate: not a single predicted value,
-but the range of results the map produces at that level.
+```
+x_ij ~ P_j( . | a_i + d_j )
+```
 
-**Read a play as a position in that distribution.** How far above or below
-expectation the play sits, divided out by how much variation the map
-produces there. The same raw deviation is worth more on a map where
-performances land close together than on one where they scatter, and this
-is what makes the number comparable across maps.
+and ability and difficulty are estimated through that distribution rather
+than from a number prepared in advance.
+
+**Standardising first and fitting second would be circular.** Take the
+expectation implied by `a_i + d_j`, subtract it, divide by the spread, and
+hand the result over: what arrives is centred on zero by construction, and
+asking `a_i + d_j` to account for it explains nothing. The per-map
+distribution has to supply the likelihood that `a_i` and `d_j` are fitted
+through. Alternating between the two sets of parameters is a way to carry
+that out, not a second model.
+
+**The weighting falls out of the likelihood.** Where a map's outcomes at
+some level land close together, moving `a_i + d_j` a little changes the
+density a lot, so that play pulls hard on the estimate. Where they scatter,
+the same play barely moves it. Nothing has to be weighted by hand: a map
+that separates players counts for more because its likelihood is steeper,
+and Reol - No title [byfaR's Hard] counts for almost nothing because its is
+nearly flat.
 
 **The spread is not one number per map.** It changes along the
 expected-performance range: a map can separate strong players while leaving
@@ -197,16 +206,30 @@ form across maps and let each map depart from it by as much as its own data
 supports, with covariates such as object count and star rating carrying the
 part that is predictable from the map alone.
 
-**Alternate between the two.** The expected level comes from the outer fit,
-and the outer fit reads residuals produced by the inner one. Start from a
-crude expected level, estimate the distributions, re-fit, and repeat.
+**Which cells are observed needs its own model.** What decides whether a
+score reaches the data is the top-100 cut and the player's choice of what
+to play, and neither is censoring of the outcome the distribution above
+describes.
 
-**Read the misses and the bounds.** A probe that came back empty says the
-player has never submitted a play, and `Player.best_cutoff_pp` says every
-unseen play by that player is worth less than a known amount. Both are
-recorded and neither is read today. Treating them as censored observations
-is what should remove the playcount effect above, since that effect comes
-from a map entering the sample only when somebody did well on it.
+A top-100 list is truncated on pp, so a play is visible only when its pp
+beat the player's hundredth best. `Player.best_cutoff_pp` records where
+that cut fell. It bounds the pp of the plays not seen, which is a statement
+about a selection score rather than about accuracy or combo on the map, and
+pp is the quantity this whole approach is trying not to lean on. Selection
+here depends on the outcome, so ignoring it biases the fit.
+
+A probe that came back empty says the player has never submitted a play on
+the map. That is missing data, not a poor performance, and entering it as a
+low outcome would be plainly wrong. What it reflects is the player's choice
+of what to play.
+
+Probes are the way in, because which cells get probed is our decision
+rather than the player's or the pp cut's. Within the probed panel the
+top-100 truncation is gone, and what remains is the player's own choice of
+what to play. That leaves one mechanism to model instead of two, and it
+leaves the `Probe` misses as evidence about that choice rather than about
+performance. The playcount effect measured above is this selection showing
+up as farm, so this is the part that has to be right.
 
 *Validate:* hold out observed cells and predict them, against predicting
 them from pp directly. Check the estimated spread on maps everyone clears,
