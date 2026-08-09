@@ -171,9 +171,8 @@ theta_i in R          q_i = Phi(theta_i) in (0, 1)
 ```
 
 What is stored per player is a belief rather than a point, a Gaussian
-`Q_i(theta) = N(theta; mu_i, sigma_i^2)`. Reading skill through `Phi` also
-sets the scale: the units come from the distribution of players, so there
-is nothing left to pin down by convention.
+`Q_i(theta) = N(theta; mu_i, sigma_i^2)`. Reading skill through `Phi` sets
+the units, which come from the distribution of players.
 
 ### Each map is a curve and a spread
 
