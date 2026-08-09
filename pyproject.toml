@@ -14,3 +14,8 @@ dependencies = [
     "requests>=2.34.2",
     "rosu-pp-py>=4.0.2",
 ]
+
+[dependency-groups]
+explorer = [
+    "reflex>=0.9.8",
+]

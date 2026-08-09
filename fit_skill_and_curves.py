@@ -603,6 +603,28 @@ def predictive(params, panel, basis, nodes, weights):
     return np.log(np.maximum(density, 1e-300)), expected
 
 
+def predictive_cdf(params, panel, basis, nodes, weights):
+    """
+    Where each outcome falls inside the distribution predicted for it: 0
+    when it is far below what the map and the player's skill lead you to
+    expect, 1 when it is far above, 0.5 when it lands exactly there.
+
+    If the model is right these come out uniform on (0, 1), whatever the
+    map and whoever the player, so their histogram is a calibration check
+    that needs no held-out data.
+    """
+    sd = np.exp(params.skill_log_sd)
+    total = np.zeros(len(panel.outcome))
+
+    for node, weight in zip(nodes, weights):
+        theta = params.skill_mean[panel.rows] + SQRT2 * sd[panel.rows] * node
+        mean, spread = curve_values(params, panel.cols, theta, basis)
+
+        total += weight * normal_cdf((panel.outcome - mean) / spread)
+
+    return total
+
+
 def score_predictions(name, y, log_density, prediction):
     return (
         name,
@@ -691,6 +713,203 @@ def check_score_derivatives(params, basis, rng, samples=200):
         )
 
     return worst_slope, worst_curvature
+
+
+class NotEnoughData(Exception):
+    """The database does not hold a panel worth fitting yet."""
+
+
+@dataclass
+class Study:
+    """The panel to fit, and everything that indexes it."""
+
+    panel: Panel
+    roster: list
+    items: list
+    stratum_of: dict
+    player_pp: dict
+    awarded: dict
+    basis: Basis
+    nodes: np.ndarray
+    weights: np.ndarray
+
+
+def prepare(conn, settings):
+    """
+    Read the panel, drop the thin edges of it, and set up the quadrature
+    the player beliefs are integrated with.
+    """
+    held, stratum_of, player_pp, awarded = load_panel(
+        conn, not settings.all_cells
+    )
+
+    if not held:
+        raise NotEnoughData("No scores in the panel yet.")
+
+    core = trim(held, settings.min_players, settings.min_items)
+
+    if len(core) < 2:
+        raise NotEnoughData(
+            f"Nothing survives {settings.min_players} players x "
+            f"{settings.min_items} items. Keep filling."
+        )
+
+    roster, items, rows, cols, outcome = observations(core)
+    nodes, weights = np.polynomial.hermite.hermgauss(settings.quadrature)
+
+    return Study(
+        panel=Panel(rows, cols, outcome, len(roster), len(items)),
+        roster=roster,
+        items=items,
+        stratum_of=stratum_of,
+        player_pp=player_pp,
+        awarded=awarded,
+        basis=Basis(settings.knots, settings.reach),
+        nodes=nodes,
+        weights=weights / math.sqrt(math.pi),
+    )
+
+
+def fit_panel(study, settings, panel=None):
+    """Fit skill beliefs and map curves to a panel, or a subset of one."""
+    panel = study.panel if panel is None else panel
+
+    def loss_and_grad(params):
+        return objective(
+            params, panel, study.basis, study.nodes, study.weights, settings
+        )
+
+    return descend(
+        initialise(panel, study.basis), loss_and_grad,
+        settings.steps, settings.rate, 0.02, 3.0,
+    )
+
+
+def map_facts(conn, study):
+    """
+    What the official numbers say about each map, indexed like the panel.
+
+    The stored rating is the unmodded one and DT moves a map by two stars
+    or more, so each item is rated as it was actually played.
+    """
+    facts = beatmap_facts(
+        conn, sorted({int(k.split(":", 1)[0]) for k in study.items})
+    )
+
+    stars = np.full(study.panel.n_items, np.nan)
+
+    for j, key in enumerate(study.items):
+        beatmap_id, mods = key.split(":", 1)
+        beatmap_id = int(beatmap_id)
+
+        if beatmap_id not in facts:
+            continue
+
+        # rating_for wants the stored unmodded rating to fall back on when
+        # the map file for a modded calculation is missing.
+        rating = rating_for(
+            beatmap_id, mods, {beatmap_id: (facts[beatmap_id]["stars"],)}
+        )
+
+        if rating is not None:
+            stars[j] = rating
+
+    return facts, stars
+
+
+def map_columns(study, params, facts, stars, settings):
+    """
+    One row per map: how steeply its curve rises, how hard it comes out,
+    what pp it pays, and how far that pp sits from what maps of the same
+    difficulty pay.
+    """
+    panel, basis = study.panel, study.basis
+    index = np.arange(panel.n_items)
+
+    skills = defaultdict(list)
+
+    for row, col in zip(panel.rows, panel.cols):
+        skills[col].append(params.skill_mean[row])
+
+    typical = np.array([np.median(skills[j]) for j in index])
+    below = np.array(
+        [float(np.mean(np.array(skills[j]) < 0.0)) for j in index]
+    )
+
+    # What each map pays a player of average level. The raw mean pp on a
+    # map would instead say who happened to be probed on it, which is the
+    # thing the length and playcount check is testing for.
+    paid = np.array(
+        [study.awarded.get((study.roster[i], study.items[j]), np.nan)
+         for i, j in zip(panel.rows, panel.cols)]
+    )
+    priced = np.isfinite(paid)
+
+    _, live, _ = additive_fit(
+        panel.rows[priced], panel.cols[priced], paid[priced],
+        panel.n_players, panel.n_items, index, 200, False,
+    )
+    live[np.bincount(panel.cols[priced], minlength=panel.n_items) == 0] = np.nan
+
+    at_median = curve_values(
+        params, index, np.zeros(panel.n_items), basis
+    )[0]
+
+    def about(field):
+        return np.array([
+            facts.get(int(k.split(":", 1)[0]), {}).get(field) or np.nan
+            for k in study.items
+        ])
+
+    def discrepancy(axis, window):
+        """
+        How much more pp a map pays than maps of the same difficulty do.
+
+        Each map is compared against its own neighbours on the axis rather
+        than against a curve fitted across the whole range, since the ends
+        of the range are where the sparsest maps sit.
+        """
+        ok = np.isfinite(axis) & np.isfinite(live)
+
+        gap = np.full(panel.n_items, np.nan)
+        expected, _ = expected_pp(
+            axis[ok], live[ok], window, settings.min_neighbours
+        )
+        gap[ok] = live[ok] - expected
+
+        return gap
+
+    return {
+        "counts": np.array([len(skills[j]) for j in index]),
+        "typical": typical,
+        "straddles": (below > 0.2) & (below < 0.8),
+        "slope": curve_slope(params, index, typical, basis),
+        "slope_at_centre": curve_slope(
+            params, index, np.zeros(panel.n_items), basis
+        ),
+        "at_median": at_median,
+        "raw_mean": np.bincount(
+            panel.cols, panel.outcome, panel.n_items
+        ) / np.maximum(np.bincount(panel.cols, minlength=panel.n_items), 1),
+        "stars": stars,
+        "length": about("length"),
+        "playcount": about("playcount"),
+        "live": live,
+        "from_stars": discrepancy(stars, settings.star_window),
+        "from_curves": discrepancy(-at_median, settings.skill_window),
+    }
+
+
+def usernames(conn, player_ids):
+    holes = ",".join("?" * len(player_ids))
+
+    return {
+        int(row[0]): row[1]
+        for row in conn.execute(
+            f"select id, username from Player where id in ({holes})",
+            list(player_ids),
+        )
+    }
 
 
 def population_report(skill):
@@ -785,30 +1004,17 @@ def main():
     rng = np.random.default_rng(args.seed)
 
     conn = connect_readonly(args.db)
-    held, stratum_of, player_pp, awarded = load_panel(
-        conn, not args.all_cells
-    )
 
-    if not held:
-        print("No scores in the panel yet.")
+    try:
+        study = prepare(conn, args)
+    except NotEnoughData as problem:
+        print(problem)
         return
 
-    core = trim(held, args.min_players, args.min_items)
-
-    if len(core) < 2:
-        print(
-            f"Nothing survives {args.min_players} players x "
-            f"{args.min_items} items. Keep filling."
-        )
-        return
-
-    roster, items, rows, cols, outcome = observations(core)
-    panel = Panel(rows, cols, outcome, len(roster), len(items))
-
-    basis = Basis(args.knots, args.reach)
-
-    nodes, weights = np.polynomial.hermite.hermgauss(args.quadrature)
-    weights = weights / math.sqrt(math.pi)
+    panel, roster, items = study.panel, study.roster, study.items
+    stratum_of, player_pp = study.stratum_of, study.player_pp
+    basis, nodes, weights = study.basis, study.nodes, study.weights
+    outcome = panel.outcome
 
     print(
         f"panel: {'probed cells only' if not args.all_cells else 'every cell'}"
@@ -872,24 +1078,7 @@ def main():
 
     test = panel.take(holdout)
 
-    beatmap_ids = sorted({int(k.split(":", 1)[0]) for k in items})
-    facts = beatmap_facts(conn, beatmap_ids)
-
-    modded_stars = np.full(panel.n_items, np.nan)
-
-    for j, key in enumerate(items):
-        beatmap_id, mods = key.split(":", 1)
-        beatmap_id = int(beatmap_id)
-
-        if beatmap_id in facts:
-            # rating_for wants the stored unmodded rating to fall back on
-            # when the map file for a modded calculation is missing.
-            rating = rating_for(
-                beatmap_id, mods, {beatmap_id: (facts[beatmap_id]["stars"],)}
-            )
-
-            if rating is not None:
-                modded_stars[j] = rating
+    facts, modded_stars = map_facts(conn, study)
 
     overall = np.array(
         [player_pp[p] if player_pp[p] else np.nan for p in roster]
@@ -1075,22 +1264,12 @@ def main():
 
     # ---- how steep each map is
 
-    observed_skill = defaultdict(list)
+    columns = map_columns(study, params, facts, modded_stars, args)
 
-    for row, col in zip(panel.rows, panel.cols):
-        observed_skill[col].append(params.skill_mean[row])
-
-    index = np.arange(panel.n_items)
-    slope_at_centre = curve_slope(
-        params, index, np.zeros(panel.n_items), basis
-    )
-
-    typical_skill = np.array(
-        [np.median(observed_skill[j]) for j in index]
-    )
-    slope_where_played = curve_slope(params, index, typical_skill, basis)
-
-    counts = np.array([len(observed_skill[j]) for j in index])
+    slope_where_played = columns["slope"]
+    slope_at_centre = columns["slope_at_centre"]
+    typical_skill = columns["typical"]
+    counts = columns["counts"]
 
     def show_maps(order, title):
         print()
@@ -1213,53 +1392,16 @@ def main():
 
     # ---- what the discrepancy against pp still tracks
 
-    # What each map pays a player of average level, from the pp-based fit
-    # over these same cells. The raw mean pp on a map would instead say
-    # who happened to be probed on it, which is the thing being tested for.
-    paid = np.array(
-        [awarded.get((roster[i], items[j]), np.nan)
-         for i, j in zip(panel.rows, panel.cols)]
-    )
-    priced = np.isfinite(paid)
-
-    _, live, _ = additive_fit(
-        panel.rows[priced], panel.cols[priced], paid[priced],
-        panel.n_players, panel.n_items, np.arange(panel.n_items), 200, False,
-    )
-
-    unpriced = np.bincount(panel.cols[priced], minlength=panel.n_items) == 0
-    live[unpriced] = np.nan
-
     # Expected performance at the median player. Lower means harder, and
     # it is the fitted stand-in for a star rating.
-    at_median = curve_values(
-        params, index, np.zeros(panel.n_items), basis
-    )[0]
-
-    below = np.array(
-        [float(np.mean(np.array(observed_skill[j]) < 0.0)) for j in index]
-    )
-
-    length = np.array(
-        [
-            facts.get(int(k.split(":", 1)[0]), {}).get("length") or np.nan
-            for k in items
-        ]
-    )
-    playcount = np.array(
-        [
-            facts.get(int(k.split(":", 1)[0]), {}).get("playcount") or np.nan
-            for k in items
-        ]
-    )
+    at_median = columns["at_median"]
+    live = columns["live"]
+    length, playcount = columns["length"], columns["playcount"]
+    raw_mean = columns["raw_mean"]
 
     print()
     print("what the fitted difficulty axis is made of")
     print()
-
-    raw_mean = np.bincount(
-        panel.cols, panel.outcome, panel.n_items
-    ) / np.maximum(np.bincount(panel.cols, minlength=panel.n_items), 1)
 
     def against(name, values):
         ok = (
@@ -1291,28 +1433,9 @@ def main():
         f"{modded_stars[np.isfinite(modded_stars)].max():.1f} stars"
     )
 
-    def discrepancy(axis, window):
-        """
-        How much more pp a map awards than maps of the same difficulty do.
-
-        Each map is compared against its own neighbours on the axis rather
-        than against a curve fitted across the whole range, since the ends
-        of the range are where the sparsest maps sit.
-        """
-        ok = np.isfinite(axis) & np.isfinite(live)
-
-        gap = np.full(panel.n_items, np.nan)
-        expected, _ = expected_pp(
-            axis[ok], live[ok], window, args.min_neighbours
-        )
-        gap[ok] = live[ok] - expected
-
-        return gap
-
-    from_stars = discrepancy(modded_stars, args.star_window)
-    from_curves = discrepancy(-at_median, args.skill_window)
-
-    straddles = (below > 0.2) & (below < 0.8)
+    from_stars = columns["from_stars"]
+    from_curves = columns["from_curves"]
+    straddles = columns["straddles"]
 
     print()
     print(

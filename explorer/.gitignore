@@ -1,0 +1,6 @@
+.web/
+.cache/
+.states/
+reflex.lock/
+requirements.txt
+*.db

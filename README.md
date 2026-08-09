@@ -62,9 +62,23 @@ run while a sampler is writing:
 uv run diagnose.py          # residual correlation within and between strata
 uv run find_good_data.py    # the part of the data worth fitting on
 uv run fit_ability_and_difficulty.py   # solve for both together
+uv run fit_skill_and_curves.py         # skill and map curves, against the score
 ```
 
 Requires `OSU_CLIENT_ID` / `OSU_CLIENT_SECRET` in `.env`.
+
+`explorer/` is a page for reading the last of those. It has a tab for the
+maps and one for the players, each sortable and filterable. A third shows
+where each score landed inside the distribution the model predicted for it.
+
+```
+cd explorer
+uv run --project .. --group explorer reflex run
+```
+
+It fits on first load, half a minute on the probed cells, and keeps the
+result on disk so later loads are immediate. "Refit from the database"
+reads whatever the sampler has collected since.
 
 ### Growing the graph
 

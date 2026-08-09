@@ -1,0 +1,63 @@
+/*
+ * Chart and page tokens, light and dark.
+ *
+ * Dark is its own set of steps against the dark surface rather than an
+ * inversion of the light one. The values come from the validated default
+ * palette; the two series hues clear the colour-vision separation and
+ * contrast checks in both modes.
+ */
+
+:root {
+  --plane: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --hairline: rgba(11, 11, 11, 0.1);
+  --raised: rgba(11, 11, 11, 0.04);
+
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --pole-low: #2a78d6;
+  --pole-high: #e34948;
+  --pole-mid: #d8d7d2;
+}
+
+.dark {
+  --plane: #0d0d0d;
+  --surface: #1a1a19;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --hairline: rgba(255, 255, 255, 0.1);
+  --raised: rgba(255, 255, 255, 0.04);
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --pole-low: #3987e5;
+  --pole-high: #e66767;
+  --pole-mid: #383835;
+}
+
+html,
+body {
+  background: var(--plane);
+  color: var(--ink);
+}
+
+/* Columns of numbers only line up with tabular figures. */
+.figures {
+  font-variant-numeric: tabular-nums;
+}
+
+.row-button:hover {
+  background: var(--raised);
+}
+
+.recharts-surface:focus {
+  outline: none;
+}
