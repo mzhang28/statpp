@@ -101,8 +101,8 @@ def curve_chart(rows, marker, scale):
     take a scatter.
     """
     return rx.vstack(
-        legend(("expected, one spread either side", SERIES_1),
-               ("scores set", SERIES_2)),
+        legend(("expected accuracy and one spread", SERIES_1),
+               ("each score", SERIES_2)),
         frame(
             rx.recharts.x_axis(
                 data_key="x",
@@ -182,7 +182,10 @@ def falls_chart(bars, height=260):
     looks like, so the flat rule is the thing to read the bars against.
     """
     return rx.vstack(
-        legend(("share of scores", SERIES_1), ("even, if the fit is right", MUTED)),
+        legend(
+            ("part of all scores", SERIES_1),
+            ("equal height, if the fit is correct", MUTED),
+        ),
         frame(
             rx.recharts.x_axis(
                 data_key="bin",
@@ -192,7 +195,7 @@ def falls_chart(bars, height=260):
                 interval=3,
                 height=34,
                 label={
-                    "value": "where the score fell, 0 below to 1 above",
+                    "value": "position in the prediction, 0 low to 1 high",
                     "position": "insideBottom",
                     "offset": -2,
                     "fill": MUTED,
@@ -238,8 +241,8 @@ def drift_chart(bars, caption, domain, height=260):
     for higher, and near-nothing in the middle.
     """
     return rx.vstack(
-        legend(("lands below prediction", POLE_LOW),
-               ("lands above", POLE_HIGH)),
+        legend(("below the prediction", POLE_LOW),
+               ("above the prediction", POLE_HIGH)),
         frame(
             rx.recharts.x_axis(
                 data_key="band",
@@ -284,7 +287,7 @@ def drift_chart(bars, caption, domain, height=260):
 def belief_chart(curve):
     """One player's belief about their skill, against the population."""
     return rx.vstack(
-        legend(("everyone", MUTED), ("this player", SERIES_1)),
+        legend(("the panel", MUTED), ("this player", SERIES_1)),
         frame(
             rx.recharts.x_axis(
                 data_key="x",

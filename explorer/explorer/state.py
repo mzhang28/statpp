@@ -24,13 +24,13 @@ ROWS_SHOWN = 250
 MAP_ORDERS = {
     "steepest curve": ("slope", True),
     "flattest curve": ("slope", False),
-    "hardest at median skill": ("atMedian", False),
-    "easiest at median skill": ("atMedian", True),
+    "hardest for an average player": ("atMedian", False),
+    "easiest for an average player": ("atMedian", True),
     "most players": ("players", True),
     "highest star rating": ("stars", True),
     "most pp for its difficulty": ("gapCurve", True),
     "least pp for its difficulty": ("gapCurve", False),
-    "most played": ("playcount", True),
+    "most plays": ("playcount", True),
     "longest": ("length", True),
 }
 
@@ -94,7 +94,7 @@ class Explorer(rx.State):
             return
 
         async with self:
-            self.working = "fitting the panel; the first one takes a while"
+            self.working = "The fit runs now. The first fit takes some minutes."
 
         # Fitting is numpy and holds the interpreter, so it goes to a
         # thread. Left on the event loop it stops the socket the page is
@@ -113,7 +113,7 @@ class Explorer(rx.State):
     @rx.event(background=True)
     async def refit(self):
         async with self:
-            self.working = "reading the database again and refitting"
+            self.working = "The fit reads the database again."
             self.ready = False
 
         fit = await asyncio.to_thread(
@@ -233,7 +233,10 @@ class Explorer(rx.State):
 
     @rx.var
     def showing_maps(self) -> str:
-        return f"showing {len(self.map_rows)} of {self.map_total} maps"
+        return (
+            f"This list shows {len(self.map_rows)} of "
+            f"{self.map_total} maps."
+        )
 
     @rx.var
     def map_curve(self) -> list[dict]:
@@ -332,7 +335,7 @@ class Explorer(rx.State):
         rows, size = await asyncio.to_thread(metadata.held)
 
         async with self:
-            self.cached_songs = f"{rows:,} songs cached, {size // 1024:,}kB"
+            self.cached_songs = f"{rows:,} song names in the cache, {size // 1024:,}kB"
 
     async def show_songs(self, found, versions):
         if not found:
