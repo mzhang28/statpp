@@ -161,81 +161,139 @@ say so specifically:
 - Fitting to pp and then reporting a departure from pp measures one
   quantity against itself.
 
-What replaces it is one model, not a normalisation step followed by the
-existing fit. Each map gets a conditional distribution of outcomes,
+### Skill as a percentile
+
+A player's skill is one number on the real line, and what it means is fixed
+by reading it as a percentile of the whole playerbase:
 
 ```
-x_ij ~ P_j( . | a_i + d_j )
+theta_i in R          q_i = Phi(theta_i) in (0, 1)
 ```
 
-and ability and difficulty are estimated through that distribution rather
-than from a number prepared in advance.
+What is stored per player is a belief rather than a point, a Gaussian
+`Q_i(theta) = N(theta; mu_i, sigma_i^2)`. Reading skill through `Phi` also
+settles the scale question the old fit needed anchor maps for: the units
+come from the distribution of players, so there is nothing left to pin.
 
-**Standardising first and fitting second would be circular.** Take the
-expectation implied by `a_i + d_j`, subtract it, divide by the spread, and
-hand the result over: what arrives is centred on zero by construction, and
-asking `a_i + d_j` to account for it explains nothing. The per-map
-distribution has to supply the likelihood that `a_i` and `d_j` are fitted
-through. Alternating between the two sets of parameters is a way to carry
-that out, not a second model.
+### Each map is a curve and a spread
 
-**The weighting falls out of the likelihood.** Where a map's outcomes at
-some level land close together, moving `a_i + d_j` a little changes the
-density a lot, so that play pulls hard on the estimate. Where they scatter,
-the same play barely moves it. Nothing has to be weighted by hand: a map
-that separates players counts for more because its likelihood is steeper,
-and Reol - No title [byfaR's Hard] counts for almost nothing because its is
-nearly flat.
+A map is described by where performance sits at each skill level and by how
+much it varies there:
 
-**The spread is not one number per map.** It changes along the
-expected-performance range: a map can separate strong players while leaving
-weaker ones undifferentiated, or the reverse. Shape matters as well as
-width, since outcomes run into a ceiling and pile up against it. So what is
-estimated per map is a conditional distribution over the range, not a
-discrimination coefficient.
+```
+m_j : R -> R          expected performance at skill theta
+s_j : R -> R_{>0}     conditional spread at skill theta
+```
 
-**The map does not own its location.** If the per-map distribution is free
-to place its own mean, it absorbs the difficulty and the outer fit is left
-with nothing to attribute. The expected level stays on the common scale, so
-that the map-specific part describes spread and shape while difficulty
-remains where the outer fit can see it.
+Both are monotone splines with parameters partly pooled across maps, since
+no single map has the data to fit its own. The first workable outcome model
+is Gaussian:
 
-**Pool across maps.** Between 20 and 150 observations on a map is far too
-few to estimate a conditional distribution on its own. Estimate a shared
-form across maps and let each map depart from it by as much as its own data
-supports, with covariates such as object count and star rating carrying the
-part that is predictable from the map alone.
+```
+p_j(y | theta) = N( y ; m_j(theta), s_j(theta)^2 )
+```
 
-**Which cells are observed needs its own model.** What decides whether a
-score reaches the data is the top-100 cut and the player's choice of what
-to play, and neither is censoring of the outcome the distribution above
-describes.
+The map's difficulty is the curve itself rather than a separate offset.
+
+### The objective
+
+Over the observed cells `O` in `I x J`:
+
+```
+L = - sum_{(i,j) in O} log p_j(y_ij | theta_i) + R_maps + R_time
+```
+
+Carrying the player Gaussians properly makes it variational instead:
+
+```
+L = - sum_{(i,j) in O} E_{theta ~ Q_i} [ log p_j(y_ij | theta) ]
+    + sum_i KL( Q_i || P_i )
+    + R_maps
+```
+
+Map parameters and player beliefs are learned together.
+
+### What one score does to a player
+
+Write the score's log-likelihood as a function of skill, and take its slope
+and curvature at the player's current mean:
+
+```
+l(theta) = log p_j(y_ij | theta)
+
+g =  l'(mu_i)
+h = -l''(mu_i)
+```
+
+The local Gaussian update is then
+
+```
+1 / sigma_new^2 = 1 / sigma_i^2 + h
+
+mu_new = mu_i + g / ( 1 / sigma_i^2 + h )
+```
+
+`g` says which way the result disagrees with where the player currently
+sits, and how strongly. `h` says how much this map and this result reveal
+about skill at all, so a large `h` cuts the uncertainty. A likelihood that
+barely moves with skill gives both near zero, and the score changes nothing.
+
+### Why the flat maps stop counting
+
+Take an easy map where everyone above the bottom tenth full-combos it and
+accuracy among them says nothing. Then `m_j'(theta)` is near zero across
+most of the range, the likelihood hardly moves as skill moves, and the score
+updates almost nothing. Reol - No title [byfaR's Hard] is measured to behave
+exactly like this, tracking a player's own level at -0.99 with slope -1.
+
+A map whose expected accuracy turns over around the 80th percentile has a
+large `|m_j'(theta)|` right there, so scores on it separate the 70th from
+the 80th from the 90th.
+
+### The Gaussian is a placeholder
+
+Real outcomes are not one scalar. Fail against pass, full combo against
+not, misses, and accuracy each behave differently and run into ceilings, so
+`p_j` wants to be a bounded or mixture distribution over them.
+
+None of that reaches the skill side, because the interface between the two
+is only
+
+```
+p_j : R -> Dist(X_j)
+```
+
+with `X_j` the outcome space of map `j`. The skill system reads the
+log-likelihood together with its gradient and curvature, and nothing else
+about how they were produced.
+
+### Which cells are observed still needs its own model
+
+What decides whether a score reaches the data is the top-100 cut and the
+player's choice of what to play, and neither is censoring of the outcome
+`p_j` describes.
 
 A top-100 list is truncated on pp, so a play is visible only when its pp
-beat the player's hundredth best. `Player.best_cutoff_pp` records where
+beat the player's hundredth best, and `Player.best_cutoff_pp` records where
 that cut fell. It bounds the pp of the plays not seen, which is a statement
-about a selection score rather than about accuracy or combo on the map, and
-pp is the quantity this whole approach is trying not to lean on. Selection
-here depends on the outcome, so ignoring it biases the fit.
+about a selection score rather than about the outcome. Selection here
+depends on the result, so ignoring it biases the fit.
 
 A probe that came back empty says the player has never submitted a play on
-the map. That is missing data, not a poor performance, and entering it as a
-low outcome would be plainly wrong. What it reflects is the player's choice
-of what to play.
+the map. That is missing data, not a poor performance.
 
-Probes are the way in, because which cells get probed is our decision
-rather than the player's or the pp cut's. Within the probed panel the
-top-100 truncation is gone, and what remains is the player's own choice of
-what to play. That leaves one mechanism to model instead of two, and it
-leaves the `Probe` misses as evidence about that choice rather than about
-performance. The playcount effect measured above is this selection showing
-up as farm, so this is the part that has to be right.
+Probes are the way in, because which cells get probed is our decision rather
+than the player's or the pp cut's. Inside the probed panel the pp truncation
+is gone, leaving the player's own choice of what to play as the one
+mechanism to model. The playcount effect measured above is that selection
+showing up as farm.
 
 *Validate:* hold out observed cells and predict them, against predicting
-them from pp directly. Check the estimated spread on maps everyone clears,
-which for the Reol Hard is already known to be flat. Then recompute the
-length and playcount correlations: if they have not fallen towards zero,
-the correction did not work.
+them from pp directly. Check `m_j'` on maps everyone clears, which for the
+Reol Hard should come out near zero. Then recompute the length and playcount
+correlations: if they have not fallen towards zero, the correction did not
+work.
+
 
 ## Roadmap
 
