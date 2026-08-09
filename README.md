@@ -73,8 +73,17 @@ where each score landed inside the distribution the model predicted for it.
 
 ```
 cd explorer
-uv run --project .. --group explorer reflex run
+uv run --project .. --group explorer reflex run                  # localhost
+uv run --project .. --group explorer reflex run \
+    --env prod --single-port --backend-port 3000                 # anywhere
 ```
+
+The second form answers on every interface and puts the page and its
+websocket on one port, so it works through whatever hostname reaches the
+machine. That matters because the address a tunnel or a DHCP lease hands
+out is not known when the app starts, and a page served on one origin
+whose socket points at another connects to nothing. Nothing asks who is
+calling, so it is reachable by anything that can route to the port.
 
 It fits on first load, half a minute on the probed cells, and keeps the
 result on disk so later loads are immediate. "Refit from the database"
