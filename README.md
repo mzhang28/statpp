@@ -161,49 +161,58 @@ say so specifically:
 - Fitting to pp and then reporting a departure from pp measures one
   quantity against itself.
 
-So the plan is to stop treating pp as the observation, and instead learn a
-mapping from a raw score to a scale on which players are comparable. The
-shape of that mapping comes from the data, including how scores on a map
-are spread.
+The fit that solves for ability and difficulty stays as it is. What changes
+is the number handed to it. Instead of pp, each play becomes a measure of
+how far it beat or missed what was expected of that player on that map,
+scaled so the answer means the same thing on every map.
 
-**Take the observation from what the player did.** Accuracy, combo against
-the map's maximum, misses and whether the play passed are all stored, and
-none of them is pp. Reduce those to one number per (player, map) that says
-how well the play went.
+**Learn what outcomes a map produces at each expected-performance level.**
+Take a player whose expected performance sits at some point on the common
+scale. The outcomes they actually record on this map form a distribution,
+and that distribution is what to estimate: not a single predicted value,
+but the range of results the map produces at that level.
 
-**Let each map carry a location and a spread.** A map is described by how
-strong a player has to be to do middlingly on it, and by how sharply it
-separates players who differ in strength. The second is what the current
-model lacks: a map everyone clears equally has nothing to say, and should
-count for less rather than the same as any other. Written out, an outcome is a
-monotone function of `a_j * (ability_i - b_j)`, where `b_j` is the map's
-location and `a_j` its spread.
+**Read a play as a position in that distribution.** How far above or below
+expectation the play sits, divided out by how much variation the map
+produces there. The same raw deviation is worth more on a map where
+performances land close together than on one where they scatter, and this
+is what makes the number comparable across maps.
 
-**Do not normalise each map on its own.** Converting every map's scores to
-percentiles separately would force every map to face the same distribution
-of players, which is exactly the difficulty signal being sought. Hard maps
-are played by strong players and that is information. Location, spread and
-ability have to be solved together, so that the scores seen on a map are
-explained as the abilities of its players put through that map's function.
+**The spread is not one number per map.** It changes along the
+expected-performance range: a map can separate strong players while leaving
+weaker ones undifferentiated, or the reverse. Shape matters as well as
+width, since outcomes run into a ceiling and pile up against it. So what is
+estimated per map is a conditional distribution over the range, not a
+discrimination coefficient.
 
-**Use the misses and the bounds.** A probe that came back empty says the
+**The map does not own its location.** If the per-map distribution is free
+to place its own mean, it absorbs the difficulty and the outer fit is left
+with nothing to attribute. The expected level stays on the common scale, so
+that the map-specific part describes spread and shape while difficulty
+remains where the outer fit can see it.
+
+**Pool across maps.** Between 20 and 150 observations on a map is far too
+few to estimate a conditional distribution on its own. Estimate a shared
+form across maps and let each map depart from it by as much as its own data
+supports, with covariates such as object count and star rating carrying the
+part that is predictable from the map alone.
+
+**Alternate between the two.** The expected level comes from the outer fit,
+and the outer fit reads residuals produced by the inner one. Start from a
+crude expected level, estimate the distributions, re-fit, and repeat.
+
+**Read the misses and the bounds.** A probe that came back empty says the
 player has never submitted a play, and `Player.best_cutoff_pp` says every
 unseen play by that player is worth less than a known amount. Both are
-recorded and neither is currently read. Fitting them as censored
-observations rather than dropping them is what should remove the playcount
-effect above, since that effect comes from a map entering the sample only
-when someone did well on it.
-
-**Then compare against pp, with length held fixed.** Once ability and map
-difficulty sit on a scale built without pp, ask what pp osu awards at each
-position on it. Object count belongs in that comparison as its own
-term, because pp grows with it and star rating does not.
+recorded and neither is read today. Treating them as censored observations
+is what should remove the playcount effect above, since that effect comes
+from a map entering the sample only when somebody did well on it.
 
 *Validate:* hold out observed cells and predict them, against predicting
-them from pp directly. Check that maps everyone clears come out with a
-small spread, which for the Reol Hard is already known to be true. Then
-recompute the length and playcount correlations: if they have not fallen
-towards zero, the correction did not work.
+them from pp directly. Check the estimated spread on maps everyone clears,
+which for the Reol Hard is already known to be flat. Then recompute the
+length and playcount correlations: if they have not fallen towards zero,
+the correction did not work.
 
 ## Roadmap
 
