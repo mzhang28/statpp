@@ -73,6 +73,7 @@ class Fitted:
     summary: dict
     players: list
     maps: list
+    strata: list
 
     params: object
     basis: object
@@ -167,6 +168,9 @@ class Fitted:
                 "key": self.maps[int(j)]["key"],
                 "name": self.maps[int(j)]["name"],
                 "mods": self.maps[int(j)]["mods"],
+                "beatmap": self.maps[int(j)]["beatmap"],
+                "version": self.maps[int(j)]["version"],
+                "url": self.maps[int(j)]["url"],
                 "expectedText": f"{float(m):.2f}",
                 "fellAt": round(float(self.score_fell_at[c]), 3),
                 "fellAtText": f"{float(self.score_fell_at[c]):.2f}",
@@ -317,6 +321,29 @@ def cache_path(settings):
     return CACHE / f"fit-{digest}.pickle"
 
 
+def stratum_names(conn):
+    """
+    Readable names for the sampled ranking slices, in rank order.
+
+    A stratum is stored under a label like US-r03951, which says where it
+    came from but not what it is. The ranking it was drawn from and the
+    ranks it spans are both on the row already.
+    """
+    named = {}
+    order = []
+
+    for label, country, low, high in conn.execute(
+        "select label, country, rank_low, rank_high from Stratum"
+    ):
+        where = country if country else "global"
+        named[label] = f"{where} #{low:,}–{high:,}"
+        order.append((country or "", int(low), named[label]))
+
+    order.sort()
+
+    return named, [name for _, _, name in order]
+
+
 def build(settings):
     """Read the database, fit, and index the result."""
     conn = connect_readonly(str(DATABASE))
@@ -333,6 +360,7 @@ def build(settings):
     )
 
     named = usernames(conn, study.roster)
+    strata, strata_order = stratum_names(conn)
     sd = np.exp(params.skill_log_sd)
     place = normal_cdf(params.skill_mean)
     held = np.bincount(study.panel.rows, minlength=study.panel.n_players)
@@ -342,7 +370,9 @@ def build(settings):
             "index": i,
             "id": int(player),
             "name": named.get(int(player), str(player)),
-            "stratum": study.stratum_of[player],
+            "stratum": strata.get(
+                study.stratum_of[player], study.stratum_of[player]
+            ),
             "skill": round(float(params.skill_mean[i]), 4),
             "sd": round(float(sd[i]), 4),
             "percentile": round(100.0 * float(place[i]), 1),
@@ -350,6 +380,7 @@ def build(settings):
             "skillText": f"{float(params.skill_mean[i]):+.2f}",
             "sdText": f"± {float(sd[i]):.2f}",
             "percentileText": as_percentile(100.0 * float(place[i])),
+            "url": f"https://osu.ppy.sh/users/{int(player)}",
         }
         for i, player in enumerate(study.roster)
     ]
@@ -376,6 +407,8 @@ def build(settings):
             "gapStars": clean(columns["from_stars"][j], 1),
             "gapCurve": clean(columns["from_curves"][j], 1),
             "straddles": bool(columns["straddles"][j]),
+            "version": facts.get(int(beatmap_id), {}).get("version", ""),
+            "url": f"https://osu.ppy.sh/b/{int(beatmap_id)}",
         }
 
         # A missing number has to reach the page as text, since the page
@@ -401,6 +434,7 @@ def build(settings):
         },
         players=players,
         maps=maps,
+        strata=strata_order,
         params=params,
         basis=study.basis,
         score_player=study.panel.rows,

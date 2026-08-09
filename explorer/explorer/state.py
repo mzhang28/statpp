@@ -13,7 +13,7 @@ import asyncio
 
 import reflex as rx
 
-from . import fitted
+from . import fitted, metadata
 
 # The fit is expensive and shared by every visitor, so it is held once on
 # the module rather than per session.
@@ -80,6 +80,12 @@ class Explorer(rx.State):
 
     falls_split: str = "map steepness"
 
+    # Song titles arrive after the page does, so they live beside the maps
+    # rather than inside them: the fit does not need them and should not
+    # be redone when they land.
+    song: dict[str, str] = {}
+    cached_songs: str = ""
+
     # -- getting the fit in
 
     @rx.event(background=True)
@@ -88,7 +94,7 @@ class Explorer(rx.State):
             return
 
         async with self:
-            self.working = "fitting the panel, half a minute or so"
+            self.working = "fitting the panel; the first one takes a while"
 
         # Fitting is numpy and holds the interpreter, so it goes to a
         # thread. Left on the event loop it stops the socket the page is
@@ -101,6 +107,8 @@ class Explorer(rx.State):
             self.chosen_player = fit.players[0]["index"] if fit.players else -1
             self.ready = True
             self.working = ""
+
+        return Explorer.name_the_maps
 
     @rx.event(background=True)
     async def refit(self):
@@ -119,6 +127,8 @@ class Explorer(rx.State):
             self.chosen_player = fit.players[0]["index"] if fit.players else -1
             self.ready = True
             self.working = ""
+
+        return Explorer.name_the_maps
 
     @rx.event
     def set_every_cell(self, value: bool):
@@ -144,6 +154,12 @@ class Explorer(rx.State):
     def map_order_choices(self) -> list[str]:
         return list(MAP_ORDERS)
 
+    def with_song(self, row):
+        """The map, under its song title once one has been fetched."""
+        title = self.song.get(str(row["beatmap"]))
+
+        return dict(row, name=title) if title else row
+
     @rx.var
     def map_rows(self) -> list[dict]:
         if not self.ready:
@@ -151,11 +167,15 @@ class Explorer(rx.State):
 
         wanted = self.map_query.strip().lower()
         rows = [
-            m for m in held().maps
+            self.with_song(m) for m in held().maps
             if (self.map_mods == "any" or m["mods"] == self.map_mods)
-            and (not wanted or wanted in m["name"].lower()
-                 or wanted in m["key"])
         ]
+
+        if wanted:
+            rows = [
+                m for m in rows
+                if wanted in m["name"].lower() or wanted in m["key"]
+            ]
 
         return ordered(rows, MAP_ORDERS, self.map_order)[:ROWS_SHOWN]
 
@@ -178,7 +198,7 @@ class Explorer(rx.State):
         if not self.ready or self.chosen_map < 0:
             return {}
 
-        return held().maps[self.chosen_map]
+        return self.with_song(held().maps[self.chosen_map])
 
     @rx.var
     def map_title(self) -> str:
@@ -198,6 +218,18 @@ class Explorer(rx.State):
             f"typical skill {chosen['typical']} · "
             f"{chosen['starsText']} stars"
         )
+
+    @rx.var
+    def map_url(self) -> str:
+        chosen = self.map_detail
+
+        return chosen.get("url", "") if chosen else ""
+
+    @rx.var
+    def player_url(self) -> str:
+        chosen = self.player_detail
+
+        return chosen.get("url", "") if chosen else ""
 
     @rx.var
     def showing_maps(self) -> str:
@@ -230,17 +262,81 @@ class Explorer(rx.State):
     def choose_map(self, index: int):
         self.chosen_map = index
 
+        return Explorer.name_the_maps
+
     @rx.event
     def set_map_query(self, value: str):
         self.map_query = value
+
+        return Explorer.name_the_maps
 
     @rx.event
     def set_map_mods(self, value: str):
         self.map_mods = value
 
+        return Explorer.name_the_maps
+
     @rx.event
     def set_map_order(self, value: str):
         self.map_order = value
+
+        return Explorer.name_the_maps
+
+    @rx.event(background=True)
+    async def name_the_maps(self):
+        """
+        Put song titles on the maps currently listed.
+
+        Only the ones on screen, because that is a few hundred against
+        tens of thousands in the database, and the fit needs none of them.
+        Cached titles land at once; the rest cost a request per fifty maps
+        and arrive a moment later.
+        """
+        async with self:
+            if not self.ready:
+                return
+
+            shown = {
+                row["beatmap"]: row.get("version", "")
+                for row in self.map_rows + self.player_scores
+            }
+
+            if self.chosen_map >= 0:
+                chosen = held().maps[self.chosen_map]
+                shown[chosen["beatmap"]] = chosen.get("version", "")
+
+            already = set(self.song)
+
+        wanted = [b for b in shown if str(b) not in already]
+
+        if not wanted:
+            return
+
+        found = await asyncio.to_thread(metadata.named, wanted)
+        await self.show_songs(found, shown)
+
+        missing = [b for b in wanted if b not in found]
+
+        if missing:
+            await self.show_songs(
+                await asyncio.to_thread(metadata.fetch, missing), shown
+            )
+
+        rows, size = await asyncio.to_thread(metadata.held)
+
+        async with self:
+            self.cached_songs = f"{rows:,} songs cached, {size // 1024:,}kB"
+
+    async def show_songs(self, found, versions):
+        if not found:
+            return
+
+        async with self:
+            for beatmap_id, entry in found.items():
+                title = metadata.label(entry, versions.get(beatmap_id, ""))
+
+                if title:
+                    self.song[str(beatmap_id)] = title
 
     # -- players
 
@@ -249,7 +345,9 @@ class Explorer(rx.State):
         if not self.ready:
             return ["any"]
 
-        return ["any"] + sorted({p["stratum"] for p in held().players})
+        present = {p["stratum"] for p in held().players}
+
+        return ["any"] + [s for s in held().strata if s in present]
 
     @rx.var
     def player_order_choices(self) -> list[str]:
@@ -333,11 +431,16 @@ class Explorer(rx.State):
         if not self.ready or self.chosen_player < 0:
             return []
 
-        return held().player_scores(self.chosen_player)
+        return [
+            self.with_song(row)
+            for row in held().player_scores(self.chosen_player)
+        ]
 
     @rx.event
     def choose_player(self, index: int):
         self.chosen_player = index
+
+        return Explorer.name_the_maps
 
     @rx.event
     def set_player_query(self, value: str):

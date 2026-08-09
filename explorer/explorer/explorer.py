@@ -57,6 +57,21 @@ def search(label, value, on_change, placeholder):
     )
 
 
+def on_osu(url, what):
+    """A way out to the osu! page for whatever is on screen."""
+    return rx.link(
+        rx.button(
+            rx.icon("external-link", size=14),
+            what,
+            variant="soft",
+            size="1",
+            class_name="whitespace-nowrap",
+        ),
+        href=url,
+        is_external=True,
+    )
+
+
 def header():
     return rx.box(
         rx.vstack(
@@ -87,6 +102,13 @@ def header():
                 rx.vstack(
                     stat("panel", Explorer.panel_line),
                     stat("population", Explorer.population_line),
+                    rx.cond(
+                        Explorer.cached_songs,
+                        rx.text(
+                            Explorer.cached_songs,
+                            class_name="text-xs text-[var(--muted)] figures",
+                        ),
+                    ),
                     spacing="3",
                     align="start",
                 ),
@@ -207,18 +229,27 @@ def maps_tab():
             rx.cond(
                 Explorer.map_detail,
                 rx.vstack(
-                    rx.vstack(
-                        rx.heading(
-                            Explorer.map_title,
-                            size="4",
-                            class_name="text-[var(--ink)]",
+                    rx.hstack(
+                        rx.vstack(
+                            rx.heading(
+                                Explorer.map_title,
+                                size="4",
+                                class_name="text-[var(--ink)]",
+                            ),
+                            rx.text(
+                                Explorer.map_caption,
+                                class_name="text-sm text-[var(--ink-2)] "
+                                "figures",
+                            ),
+                            spacing="1",
+                            align="start",
+                            class_name="min-w-0",
                         ),
-                        rx.text(
-                            Explorer.map_caption,
-                            class_name="text-sm text-[var(--ink-2)] figures",
-                        ),
-                        spacing="1",
+                        rx.spacer(),
+                        on_osu(Explorer.map_url, "osu!"),
+                        width="100%",
                         align="start",
+                        spacing="3",
                     ),
                     charts.curve_chart(
                         Explorer.map_curve, Explorer.map_marker
@@ -333,18 +364,27 @@ def players_tab():
             rx.cond(
                 Explorer.player_detail,
                 rx.vstack(
-                    rx.vstack(
-                        rx.heading(
-                            Explorer.player_title,
-                            size="4",
-                            class_name="text-[var(--ink)]",
+                    rx.hstack(
+                        rx.vstack(
+                            rx.heading(
+                                Explorer.player_title,
+                                size="4",
+                                class_name="text-[var(--ink)]",
+                            ),
+                            rx.text(
+                                Explorer.player_caption,
+                                class_name="text-sm text-[var(--ink-2)] "
+                                "figures",
+                            ),
+                            spacing="1",
+                            align="start",
+                            class_name="min-w-0",
                         ),
-                        rx.text(
-                            Explorer.player_caption,
-                            class_name="text-sm text-[var(--ink-2)] figures",
-                        ),
-                        spacing="1",
+                        rx.spacer(),
+                        on_osu(Explorer.player_url, "osu!"),
+                        width="100%",
                         align="start",
+                        spacing="3",
                     ),
                     charts.belief_chart(Explorer.player_belief),
                     rx.text(
