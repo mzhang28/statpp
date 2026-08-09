@@ -163,16 +163,30 @@ say so specifically:
 
 ### Skill as a percentile
 
-A player's skill is one number on the real line, and what it means is fixed
-by reading it as a percentile of the whole playerbase:
+A player's skill is one number on the real line, read as a percentile of
+the whole playerbase:
 
 ```
 theta_i in R          q_i = Phi(theta_i) in (0, 1)
 ```
 
+That reading has to be earned. `Phi` maps the line to `(0, 1)` whatever the
+numbers mean, so `q_i` is a percentile only where the population
+distribution of skill is itself standard normal:
+
+```
+theta_i ~ N(0, 1)
+```
+
+That is the population prior `P_i` the fit is regularised towards, and it
+has to be held up during training: the empirical spread of the fitted
+skills is what must stay centred and scaled, since nothing stops a
+maximiser from drifting the whole population and rescaling the map curves
+to match. Without that constraint `Phi` is an arbitrary change of
+coordinate and the percentile reading is not available.
+
 What is stored per player is a belief rather than a point, a Gaussian
-`Q_i(theta) = N(theta; mu_i, sigma_i^2)`. Reading skill through `Phi` sets
-the units, which come from the distribution of players.
+`Q_i(theta) = N(theta; mu_i, sigma_i^2)`.
 
 ### Each map is a curve and a spread
 
@@ -184,9 +198,12 @@ m_j : R -> R          expected performance at skill theta
 s_j : R -> R_{>0}     conditional spread at skill theta
 ```
 
-Both are monotone splines with parameters partly pooled across maps, since
-no single map has the data to fit its own. The first workable outcome model
-is Gaussian:
+Only `m_j` is constrained monotone. Spread is free to rise and fall across
+the range, which is what a map does when it separates players in its middle
+band while everyone below flounders alike and everyone above clears alike,
+so `s_j` is held positive and otherwise left alone. Both are splines with
+parameters partly pooled across maps, since no single map has the data to
+fit its own. The first workable outcome model is Gaussian:
 
 ```
 p_j(y | theta) = N( y ; m_j(theta), s_j(theta)^2 )
@@ -210,12 +227,15 @@ L = - sum_{(i,j) in O} E_{theta ~ Q_i} [ log p_j(y_ij | theta) ]
     + R_maps
 ```
 
-Map parameters and player beliefs are learned together.
+Map parameters and player beliefs are learned together, and training means
+optimising each `(mu_i, sigma_i)` against this objective directly.
 
 ### What one score does to a player
 
-Write the score's log-likelihood as a function of skill, and take its slope
-and curvature at the player's current mean:
+There is also a cheap way to fold in a single new score without refitting,
+which is what an incremental update needs. Write the score's log-likelihood
+as a function of skill, and take its slope and curvature at the player's
+current mean:
 
 ```
 l(theta) = log p_j(y_ij | theta)
@@ -224,13 +244,20 @@ g =  l'(mu_i)
 h = -l''(mu_i)
 ```
 
-The local Gaussian update is then
+A Laplace step around `mu_i` then gives
 
 ```
 1 / sigma_new^2 = 1 / sigma_i^2 + h
 
 mu_new = mu_i + g / ( 1 / sigma_i^2 + h )
 ```
+
+This holds only near `mu_i`, and only while the precision it produces stays
+positive. `h` is a curvature, and a mixture over fail and pass, or an
+outcome piling up against a ceiling, is not log-concave everywhere, so `h`
+can come out negative and drive `1/sigma_i^2 + h` to zero or below. Such a
+step has to be rejected or damped. Where a score matters enough to be worth
+getting right, refit against the objective above rather than stepping.
 
 `g` says which way the result disagrees with where the player currently
 sits, and how strongly. `h` says how much this map and this result reveal
@@ -242,8 +269,13 @@ barely moves with skill gives both near zero, and the score changes nothing.
 Take an easy map where everyone above the bottom tenth full-combos it and
 accuracy among them says nothing. Then `m_j'(theta)` is near zero across
 most of the range, the likelihood hardly moves as skill moves, and the score
-updates almost nothing. Reol - No title [byfaR's Hard] is measured to behave
-exactly like this, tracking a player's own level at -0.99 with slope -1.
+updates almost nothing.
+
+Reol - No title [byfaR's Hard] is the candidate to look at first, since pp
+on it tracks a player's own level at -0.99 with slope -1, meaning everyone
+earns about the same pp there. That is a fact about pp on the map. Whether
+`m_j'` is flat for the raw outcome eventually modelled is a separate
+question, and finding out is what this model is for.
 
 A map whose expected accuracy turns over around the 80th percentile has a
 large `|m_j'(theta)|` right there, so scores on it separate the 70th from
@@ -288,10 +320,11 @@ mechanism to model. The playcount effect measured above is that selection
 showing up as farm.
 
 *Validate:* hold out observed cells and predict them, against predicting
-them from pp directly. Check `m_j'` on maps everyone clears, which for the
-Reol Hard should come out near zero. Then recompute the length and playcount
-correlations: if they have not fallen towards zero, the correction did not
-work.
+them from pp directly. Check that the fitted population of skills is still
+standard normal, since the percentile reading rests on it. Read `m_j'` on
+maps everyone clears and see whether it comes out flat. Then recompute the
+length and playcount correlations: if they have not fallen towards zero,
+the correction did not work.
 
 
 ## Roadmap
