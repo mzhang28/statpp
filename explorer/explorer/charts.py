@@ -27,6 +27,13 @@ POLE_MID = "var(--pole-mid)"
 
 TICK = {"fill": MUTED, "fontSize": 11}
 
+# The fit works on a stretched accuracy scale, where equal steps near 100%
+# mean equal steps in how hard they are to reach. Nobody reads a score
+# that way, so the axis is turned back into the percentage it came from.
+AS_ACCURACY = rx.Var(
+    "((v) => (100 * (1 - Math.pow(10, -v))).toFixed(v >= 2 ? 2 : 1) + '%')"
+)
+
 
 def frame(*children, height=300, data=None, kind=None):
     """A chart body with the chrome every chart here shares."""
@@ -84,7 +91,7 @@ def legend(*entries):
     )
 
 
-def curve_chart(rows, marker):
+def curve_chart(rows, marker, scale):
     """
     A map's expected performance across the skill range, the band one
     spread either side, and the scores actually set on it.
@@ -101,6 +108,8 @@ def curve_chart(rows, marker):
                 data_key="x",
                 type_="number",
                 domain=[-3, 3],
+                ticks=[-3, -2, -1, 0, 1, 2, 3],
+                allow_data_overflow=True,
                 tick_line=False,
                 axis_line=True,
                 tick=TICK,
@@ -118,9 +127,12 @@ def curve_chart(rows, marker):
                 tick_line=False,
                 axis_line=False,
                 tick=TICK,
-                width=44,
+                width=58,
+                domain=scale["domain"],
+                ticks=scale["ticks"],
+                custom_attrs={"tickFormatter": AS_ACCURACY},
                 label={
-                    "value": "nines",
+                    "value": "accuracy",
                     "angle": -90,
                     "position": "insideLeft",
                     "fill": MUTED,

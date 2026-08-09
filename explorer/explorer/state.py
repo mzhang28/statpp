@@ -28,8 +28,8 @@ MAP_ORDERS = {
     "easiest at median skill": ("atMedian", True),
     "most players": ("players", True),
     "highest star rating": ("stars", True),
-    "pays most above its difficulty": ("gapCurve", True),
-    "pays least above its difficulty": ("gapCurve", False),
+    "most pp for its difficulty": ("gapCurve", True),
+    "least pp for its difficulty": ("gapCurve", False),
     "most played": ("playcount", True),
     "longest": ("length", True),
 }
@@ -78,7 +78,7 @@ class Explorer(rx.State):
     player_order: str = "highest skill"
     chosen_player: int = -1
 
-    falls_split: str = "map steepness"
+    falls_split: str = "how much the map separates players"
 
     # Song titles arrive after the page does, so they live beside the maps
     # rather than inside them: the fit does not need them and should not
@@ -241,6 +241,13 @@ class Explorer(rx.State):
             return []
 
         return held().curve_and_scores(self.chosen_map)
+
+    @rx.var
+    def map_range(self) -> dict:
+        if not self.ready or self.chosen_map < 0:
+            return {"domain": [0, 3.4], "ticks": [0, 1, 2, 3]}
+
+        return held().accuracy_range(self.chosen_map)
 
     @rx.var
     def map_marker(self) -> dict:
@@ -467,7 +474,12 @@ class Explorer(rx.State):
 
     @rx.var
     def split_choices(self) -> list[str]:
-        return ["map steepness", "player skill", "star rating", "how hard"]
+        return [
+            "how much the map separates players",
+            "player skill",
+            "star rating",
+            "how hard the map is",
+        ]
 
     @rx.var
     def falls_drift(self) -> list[dict]:
@@ -485,14 +497,14 @@ class Explorer(rx.State):
         elif self.falls_split == "star rating":
             values = [fit.maps[int(j)]["stars"] for j in fit.score_map[cells]]
             label = "stars"
-        elif self.falls_split == "how hard":
+        elif self.falls_split == "how hard the map is":
             values = [
                 fit.maps[int(j)]["atMedian"] for j in fit.score_map[cells]
             ]
-            label = "nines at median skill"
+            label = "accuracy an average player reaches"
         else:
             values = [fit.maps[int(j)]["slope"] for j in fit.score_map[cells]]
-            label = "slope"
+            label = "separates by"
 
         return keep_rated(fit, cells, values, label)
 

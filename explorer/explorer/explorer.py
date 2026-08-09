@@ -57,6 +57,50 @@ def search(label, value, on_change, placeholder):
     )
 
 
+def explain(*lines):
+    """
+    Where a number on screen came from.
+
+    A popover rather than a title attribute, because a phone has no hover
+    to put one behind, and the same tap target answers a mouse.
+    """
+    return rx.popover.root(
+        rx.popover.trigger(
+            rx.icon_button(
+                rx.icon("info", size=13),
+                variant="ghost",
+                color_scheme="gray",
+                size="1",
+                aria_label="how this is worked out",
+                class_name="align-middle",
+            ),
+        ),
+        rx.popover.content(
+            rx.vstack(
+                *[
+                    rx.text(line, class_name="text-sm text-[var(--ink-2)]")
+                    for line in lines
+                ],
+                spacing="2",
+            ),
+            side="top",
+            align="end",
+            max_width="22rem",
+            class_name="bg-[var(--surface)]",
+        ),
+    )
+
+
+def titled(text, *lines, size="4"):
+    """A heading with the explanation of what sits under it beside it."""
+    return rx.hstack(
+        rx.heading(text, size=size, class_name="text-[var(--ink)]"),
+        explain(*lines),
+        spacing="1",
+        align="center",
+    )
+
+
 def on_osu(url, what):
     """A way out to the osu! page for whatever is on screen."""
     return rx.link(
@@ -211,13 +255,35 @@ def maps_tab():
                     wrap="wrap",
                     class_name="gap-y-3",
                 ),
-                rx.text(
-                    Explorer.showing_maps,
-                    class_name="text-xs text-[var(--muted)]",
+                rx.hstack(
+                    rx.text(
+                        Explorer.showing_maps,
+                        class_name="text-xs text-[var(--muted)]",
+                    ),
+                    explain(
+                        "One row per beatmap played under one set of mods, "
+                        "since the same map with DT is not the same thing "
+                        "to play.",
+                        "Separates by: how much the expected accuracy "
+                        "changes as skill changes, read where this map's "
+                        "own players sit. Near zero means everyone scores "
+                        "about the same and the map tells them apart on "
+                        "nothing.",
+                        "Average player: the accuracy the curve expects "
+                        "from someone at the middle of the panel, which "
+                        "for a map only strong players touch is the fit "
+                        "guessing from similar maps.",
+                        "pp gap: what osu! awards here, minus what it "
+                        "awards on maps the fit rates equally hard. "
+                        "Positive means more pp than the difficulty "
+                        "measured here accounts for.",
+                    ),
+                    spacing="1",
+                    align="center",
                 ),
                 table(
-                    ["map", "players", "slope", "nines at 50th", "stars",
-                     "pp gap"],
+                    ["map", "players", "separates by", "average player",
+                     "stars", "pp gap"],
                     rx.foreach(Explorer.map_rows, map_row),
                 ),
                 spacing="3",
@@ -252,13 +318,56 @@ def maps_tab():
                         spacing="3",
                     ),
                     charts.curve_chart(
-                        Explorer.map_curve, Explorer.map_marker
+                        Explorer.map_curve,
+                        Explorer.map_marker,
+                        Explorer.map_range,
                     ),
-                    rx.text(
-                        "A flat curve means everyone scores about the same "
-                        "here, so a score on this map says little about who "
-                        "set it.",
-                        class_name="text-sm text-[var(--ink-2)]",
+                    rx.hstack(
+                        rx.text(
+                            "A flat curve means everyone scores about the "
+                            "same here, so a score on this map says little "
+                            "about who set it.",
+                            class_name="text-sm text-[var(--ink-2)]",
+                        ),
+                        explain(
+                            "The line is the accuracy the fit expects at "
+                            "each skill, and the band is one spread either "
+                            "side of it. Both are fitted to this map's own "
+                            "scores, pulled towards the average map where "
+                            "it has few.",
+                            "Each dot is one score: the player's fitted "
+                            "skill across, the accuracy they got up. A "
+                            "map with more than 1200 of them is drawn from "
+                            "an even sample.",
+                            "The scale is stretched near the top, so the "
+                            "gap from 99% to 99.9% takes as much room as "
+                            "90% to 99%. Equal steps are equally hard to "
+                            "make.",
+                        ),
+                        spacing="1",
+                        align="start",
+                        width="100%",
+                    ),
+                    rx.hstack(
+                        rx.text(
+                            "Where the scores on this map landed against "
+                            "what was predicted for each of them.",
+                            class_name="text-sm text-[var(--ink-2)]",
+                        ),
+                        explain(
+                            "For every score on this map, the fit had a "
+                            "whole distribution in mind rather than one "
+                            "number. This counts where the score that "
+                            "happened sat inside it, from 0 far below to "
+                            "1 far above.",
+                            "Level bars mean the spread is about right "
+                            "here. A pile at one end means the map's "
+                            "players beat the prediction, or missed it, "
+                            "more often than the fit allows for.",
+                        ),
+                        spacing="1",
+                        align="start",
+                        width="100%",
                     ),
                     charts.falls_chart(Explorer.map_falls, height=220),
                     spacing="4",
@@ -350,6 +459,28 @@ def players_tab():
                     wrap="wrap",
                     class_name="gap-y-3",
                 ),
+                rx.hstack(
+                    rx.text(
+                        "every player in the panel",
+                        class_name="text-xs text-[var(--muted)]",
+                    ),
+                    explain(
+                        "Skill is one number per player on a scale where "
+                        "the whole panel averages zero and spreads by "
+                        "one. It comes from their scores and the curves "
+                        "of the maps they set them on, solved together.",
+                        "Below them: the share of this panel sitting "
+                        "lower. The panel is drawn from log-spaced slices "
+                        "of the ranking rather than at random, so it is a "
+                        "place among these players and not among "
+                        "everyone.",
+                        "Uncertainty: how wide the fit's belief about "
+                        "them is. Few scores, or scores on maps that "
+                        "separate nobody, leave it wide.",
+                    ),
+                    spacing="1",
+                    align="center",
+                ),
                 table(
                     ["player", "stratum", "skill", "below them",
                      "uncertainty", "scores"],
@@ -386,13 +517,47 @@ def players_tab():
                         align="start",
                         spacing="3",
                     ),
+                    rx.hstack(
+                        rx.text(
+                            "Where the fit thinks they sit, against "
+                            "everyone.",
+                            class_name="text-sm text-[var(--ink-2)]",
+                        ),
+                        explain(
+                            "The grey curve is the population every skill "
+                            "is measured against, held to average zero and "
+                            "spread one while the fit runs.",
+                            "The blue curve is this player: its middle is "
+                            "their skill and its width is how sure the fit "
+                            "is. A narrow one means their scores agree "
+                            "with each other and were set on maps that "
+                            "separate players.",
+                        ),
+                        spacing="1",
+                        align="start",
+                        width="100%",
+                    ),
                     charts.belief_chart(Explorer.player_belief),
-                    rx.text(
-                        "Their scores, the best above prediction first.",
-                        class_name="text-sm text-[var(--ink-2)]",
+                    rx.hstack(
+                        rx.text(
+                            "Their scores, the best above prediction first.",
+                            class_name="text-sm text-[var(--ink-2)]",
+                        ),
+                        explain(
+                            "Expected of them: the accuracy this map's "
+                            "curve predicts at this player's fitted "
+                            "skill.",
+                            "Where it fell: how the accuracy they got "
+                            "compares, as a place inside the whole "
+                            "predicted distribution. Past halfway means "
+                            "they beat what was expected on that map.",
+                        ),
+                        spacing="1",
+                        align="start",
+                        width="100%",
                     ),
                     table(
-                        ["map", "accuracy", "expected nines", "where it fell"],
+                        ["map", "accuracy", "expected of them", "where it fell"],
                         rx.foreach(Explorer.player_scores, score_row),
                     ),
                     spacing="4",
@@ -415,10 +580,17 @@ def falls_tab():
     return rx.grid(
         rx.box(
             rx.vstack(
-                rx.heading(
+                titled(
                     "Where every score fell",
-                    size="4",
-                    class_name="text-[var(--ink)]",
+                    "Each score's accuracy is turned into its place inside "
+                    "the distribution the fit predicted for that exact "
+                    "cell: this player, this map, these mods.",
+                    "Twenty bins across, and the share of all scores "
+                    "falling in each. A fit with the spread right scatters "
+                    "them evenly, so the flat line is what agreement looks "
+                    "like and needs no held-out data to check.",
+                    "A hump in the middle means the predicted spread is "
+                    "too wide; piles at both ends mean it is too narrow.",
                 ),
                 rx.text(
                     "For each score the model predicted a whole distribution "
@@ -439,10 +611,18 @@ def falls_tab():
             rx.vstack(
                 rx.hstack(
                     rx.vstack(
-                        rx.heading(
+                        titled(
                             "Split by",
-                            size="4",
-                            class_name="text-[var(--ink)]",
+                            "The same scores, cut into ten equal-sized "
+                            "bands of whatever is chosen, with the middle "
+                            "of each band's landings plotted against the "
+                            "halfway mark.",
+                            "Zero means the fit is right on average for "
+                            "that band. A bar below zero means scores "
+                            "there come in lower than predicted, above "
+                            "means higher. A steady slope across the "
+                            "bands is the fit being wrong in a way that "
+                            "tracks whatever the bands are made of.",
                         ),
                         rx.text(
                             "A bar away from zero means the model is wrong "

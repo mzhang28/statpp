@@ -12,6 +12,7 @@ line scripts use, so this runs while the sampler writes.
 
 import hashlib
 import json
+import math
 import os
 import pickle
 import sys
@@ -137,6 +138,47 @@ class Fitted:
 
         return rows
 
+    def accuracy_range(self, j):
+        """
+        The stretch of the accuracy scale this map needs, and round
+        accuracies to mark it at.
+
+        Left to itself the axis runs to wherever the spread band reaches,
+        which can be below zero, and zero on this scale is an accuracy of
+        nothing. The ticks are the round percentages, which land on whole
+        numbers here because the scale is a logarithm.
+        """
+        rows = self.curve(j) + self.map_scores(j)
+
+        low = min(
+            [r["band"][0] for r in rows if "band" in r]
+            + [r["score"] for r in rows if "score" in r]
+        )
+        high = max(
+            [r["band"][1] for r in rows if "band" in r]
+            + [r["score"] for r in rows if "score" in r]
+        )
+
+        low = max(0.0, low - 0.08)
+        high = high + 0.08
+
+        # Marked at accuracies a person would name, which are not round
+        # numbers once the scale is stretched.
+        marks = [
+            -math.log10(1.0 - a)
+            for a in (0.0, 0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995,
+                      0.998, 0.999, 0.9995)
+        ]
+        inside = [round(t, 4) for t in marks if low <= t <= high]
+
+        while len(inside) > 6:
+            inside = inside[::2]
+
+        return {
+            "domain": [round(low, 3), round(high, 3)],
+            "ticks": inside,
+        }
+
     def marker(self, j):
         """
         How to draw one score.
@@ -171,7 +213,7 @@ class Fitted:
                 "beatmap": self.maps[int(j)]["beatmap"],
                 "version": self.maps[int(j)]["version"],
                 "url": self.maps[int(j)]["url"],
-                "expectedText": f"{float(m):.2f}",
+                "expectedText": f"{accuracy_of(m):.2f}%",
                 "fellAt": round(float(self.score_fell_at[c]), 3),
                 "fellAtText": f"{float(self.score_fell_at[c]):.2f}",
                 "barWidth": f"{100 * float(self.score_fell_at[c]):.0f}%",
@@ -293,7 +335,7 @@ def thinned(cells, lookup, cap):
 
 
 def accuracy_of(outcome):
-    """Back from nines to the accuracy a person would recognise."""
+    """Back from the stretched scale to a plain accuracy percentage."""
     return round(100.0 * (1.0 - 10.0 ** (-float(outcome))), 2)
 
 
@@ -399,6 +441,11 @@ def build(settings):
             "players": int(columns["counts"][j]),
             "slope": clean(columns["slope"][j], 3),
             "atMedian": clean(columns["at_median"][j], 3),
+            "atMedianAccuracy": (
+                None if columns["at_median"][j] is None
+                or not np.isfinite(columns["at_median"][j])
+                else accuracy_of(columns["at_median"][j])
+            ),
             "typical": clean(columns["typical"][j], 2),
             "stars": clean(columns["stars"][j], 2),
             "length": clean(columns["length"][j], 0),
@@ -416,6 +463,11 @@ def build(settings):
         for name in ("slope", "atMedian", "stars", "gapCurve", "length",
                      "playcount", "livePP"):
             row[name + "Text"] = shown(row[name])
+
+        row["atMedianText"] = (
+            "—" if row["atMedianAccuracy"] is None
+            else f"{row['atMedianAccuracy']:.2f}%"
+        )
 
         maps.append(row)
 
