@@ -319,18 +319,23 @@ The logit-normal is the default. The mixture is within 0.009 of it, which
 is nothing, so the argument between them is calibration and cost: 0.014
 against 0.015, and 15 seconds a fit against 85.
 
-Getting to that table meant fixing the pooling, and the fix was worth more
-than the choice of family. Swept on one panel and one holdout, the strength
-holding each channel's per-map level runs flat from about 2 to 40 and falls
-away sharply below 1. It had been set at 0.05. Every family gained: the
-mixture went from 2.245 to 2.601 and the logit-normal from 2.570 to 2.604.
-Each family now declares its own strength per channel in `outcomes.py`,
-because six channels carry 42 parameters per map against three channels'
-21 and need holding twice as hard, so the table above is a fair fight
-without any flags.
+One number decided more than the choice of family. The strength holding
+each channel's per-map level, `--pool-level`, had been set at 0.05. Swept
+on one panel and one holdout it runs flat from about 2 to 40 and falls away
+below 1:
 
-The beta trails on likelihood and is well behind on calibration, at 0.062
-against 0.014, and no pooling moved that.
+```
+lambda_l      0.05    0.5    1.0    2.0    5.0     10     40
+logit-normal 2.586  2.592  2.595  2.600  2.603  2.603  2.598
+```
+
+At 5.0 the mixture reads 2.606 where at 0.05 it read 2.297. Its six
+channels carry 42 parameters per map against the other families' 21, so it
+had the most to lose. The per-channel pooling each family already declared
+turned out to be right, and raising it bought nothing.
+
+The beta trails on likelihood and is well behind on calibration, at 0.060
+against 0.012, and no pooling moved that.
 
 Because every number here is a density on accuracy, none of them compares
 against anything measured on another scale.

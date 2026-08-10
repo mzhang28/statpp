@@ -443,9 +443,7 @@ class Channel:
 
     `pool` is how hard the per-map shape of this channel is pulled towards
     the average map's, which is the only thing holding a channel up on a
-    map with eleven players. It is declared per channel and per family,
-    since a family with six channels carries twice the parameters per map
-    and needs holding twice as hard. Swept, not guessed: see the README.
+    map with eleven players. Swept, not guessed: see the README.
     """
 
     name: str
@@ -579,7 +577,7 @@ class BetaAtOne(Family):
     kernel = staticmethod(beta_kernel)
 
     channels = (
-        Channel("location", "rising", 10.0,
+        Channel("location", "rising", 2.0,
                 "logit of the mean accuracy at this skill"),
         Channel("steadiness", "free", 50.0,
                 "log of the beta concentration: higher is tighter"),
@@ -793,15 +791,15 @@ class BetaMixtureAtOne(Family):
     kernel = staticmethod(beta_mixture_kernel)
 
     channels = (
-        Channel("location", "rising", 10.0,
+        Channel("location", "rising", 2.0,
                 "logit of the mean accuracy of a run that goes normally"),
         Channel("steadiness", "free", 50.0,
                 "log concentration of that component"),
-        Channel("slip_drop", "free", 400.0,
+        Channel("slip_drop", "free", 50.0,
                 "how far below it a bad run lands, on the logit scale"),
-        Channel("slip_steadiness", "free", 400.0,
+        Channel("slip_steadiness", "free", 50.0,
                 "log concentration of the component that goes wrong"),
-        Channel("slip_chance", "falling", 50.0,
+        Channel("slip_chance", "falling", 2.0,
                 "logit of how often a run goes that way"),
         Channel("perfect", "rising", 2.0,
                 "logit of the chance the score is exactly 100%"),

@@ -530,6 +530,10 @@ def players_tab():
                             "thin curve means that the scores agree with "
                             "each other. It also means that the maps "
                             "separate players well.",
+                            "Each curve has its own height. Read the "
+                            "width of the blue curve against the width "
+                            "of the gray one. Do not compare the two "
+                            "heights.",
                         ),
                         spacing="1",
                         align="start",

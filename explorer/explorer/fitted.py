@@ -237,15 +237,24 @@ class Fitted:
         return rows[:cap]
 
     def belief(self, i, lo=-3.0, hi=3.0, steps=97):
-        """The population against this one player's belief."""
+        """
+        The population against this one player's belief, each drawn to its
+        own height.
+
+        Both are densities and both cover an area of one, so the narrower
+        of the two is also the taller. A player with two hundred scores is
+        placed to within a twentieth of the population spread, which puts
+        their peak twenty times above the population's and flattens the
+        population into a line along the bottom. Scaling each to its own
+        peak keeps the reading that matters, which is where the player
+        sits and how wide the belief is against the spread behind it.
+        """
         skills = np.linspace(lo, hi, steps)
         centre = self.players[i]["skill"]
         width = self.players[i]["sd"]
 
-        population = np.exp(-0.5 * skills ** 2) / np.sqrt(2.0 * np.pi)
-        belief = np.exp(
-            -0.5 * ((skills - centre) / width) ** 2
-        ) / (width * np.sqrt(2.0 * np.pi))
+        population = np.exp(-0.5 * skills ** 2)
+        belief = np.exp(-0.5 * ((skills - centre) / width) ** 2)
 
         return [
             {
