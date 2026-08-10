@@ -16,7 +16,7 @@
 #align(center)[
   #text(size: 15pt, weight: "bold")[
     A latent-trait model for osu! performance with\
-    item-specific response and dispersion functions
+    item-specific conditional distributions
   ]
   #v(1.2em)
 ]
@@ -29,20 +29,18 @@
     difficulty, so that any attempt to identify beatmaps overvalued
     relative to their difficulty is circular if difficulty is itself
     estimated from pp. We specify an item-response model in which the
-    observed quantity is the accuracy of a submitted score rather than
-    the points awarded for it. Each player is assigned a scalar latent
-    ability; each item, defined as a beatmap under a fixed modifier
-    combination, is assigned a monotone response function giving expected
-    accuracy as a function of ability, together with a strictly positive
-    dispersion function giving the conditional standard deviation at that
-    ability. Both are constructed from logistic ramps at fixed knots and
-    are partially pooled across items. Inference proceeds by minimisation
-    of a variational objective in which the conditional log-likelihood is
-    integrated against each player's posterior by Gauss--Hermite
-    quadrature. We give the identifiability argument that licenses
-    interpretation of the ability scale, report the held-out predictive
-    comparison against pp-based baselines, and state the model's known
-    deficiencies.
+    observed quantity is the accuracy of a submitted score rather than the
+    points awarded for it, and in which the accuracy is modelled as it
+    stands rather than after transformation. Each player is assigned a
+    scalar latent ability. Each item, defined as a beatmap under a fixed
+    modifier combination, is assigned a conditional distribution over
+    accuracy indexed by ability, drawn from a family that the estimation
+    procedure selects rather than fixes in advance. The ability model
+    consumes that distribution through a fixed interface and is therefore
+    independent of the family chosen. We describe the parameterisation,
+    the variational objective, the identifiability argument that licenses
+    interpretation of the ability scale, the criterion by which a family
+    is selected, and the model's known deficiencies.
   ]
 ]
 
@@ -64,14 +62,14 @@ $p_(i j) approx alpha_i + delta_j$, in which $p_(i j)$ denotes the points
 awarded to player $i$ on item $j$, $alpha_i$ a player effect and
 $delta_j$ an item effect. Diagnostics on the collected panel indicate
 that this specification is inadequate in three respects. The residual
-standard deviation is approximately 80 points, which is large relative to
-the differences of interest. On items of low difficulty the awarded
-points are nearly invariant to ability, so that such items contribute no
-information about the ordering of players while receiving the same weight
-as any other item. The departure of the fitted item effects from pp
-correlates with beatmap duration and with the number of times a beatmap
-has been played, both properties of the reward formula and of the
-sampling design rather than of difficulty.
+standard deviation is large relative to the differences of interest. On
+items of low difficulty the awarded points are nearly invariant to
+ability, so that such items contribute no information about the ordering
+of players while receiving the same weight as any other item. The
+departure of the fitted item effects from pp correlates with beatmap
+duration and with the number of times a beatmap has been played, both
+properties of the reward formula and of the sampling design rather than
+of difficulty.
 
 We therefore replace the observation model. The quantity modelled is the
 accuracy of the score, which pp does not enter, so that a comparison
@@ -92,40 +90,42 @@ is identified with Double Time, and modifiers that do not alter the
 demands of the play are discarded. Scores recorded under modifier
 settings that alter the beatmap are excluded.
 
-The analyses below use probed cells only. A hundred-best list is
-truncated at the player's hundredth-best score measured in points, so
-that membership of the list depends on the outcome; a probe is issued
-before the outcome is known, and membership of the probed panel therefore
-does not. The restriction removes truncation on the response at the cost
-of a smaller panel.
-
-Two panels appear below. The predictive comparison of @sec-predictive was
-computed on a frozen copy of the database containing 1,397 players, 500
-items and 18,808 observations. The quantities of @sec-behaviour were
-computed on a later panel of 1,648 players, 1,243 items and 48,883
-observations, the sampler having continued to run in the interim.
+All observed cells enter the analysis. The two kinds of cell are not
+observed under the same mechanism. A hundred-best list is truncated at
+the player's hundredth-best score measured in points, so that membership
+of the list depends on the outcome; a probe is issued before the outcome
+is known, and membership of the probed panel therefore does not.
+Restriction to probed cells would remove the first mechanism at the cost
+of the majority of the observations, and would leave the second, namely
+the player's choice of what to attempt, in place regardless. The origin
+of each cell is recorded and is available to a selection model, which
+@sec-limits identifies as the principal outstanding component.
 
 = Model
 
 == Response variable
 
 Let $a_(i j) in (0, 1]$ denote the accuracy of the score of player $i$ on
-item $j$. Accuracy is bounded above and the distribution of submitted
-scores is concentrated near that bound, so that differences between
-strong players occupy a small interval on the raw scale while
-corresponding to large differences in difficulty of attainment. We
-therefore model the transformed response
+item $j$. It is modelled as it stands. A transformation of the response
+followed by a Gaussian conditional distribution imposes two assumptions
+where one suffices, and the choice of transformation is not identified by
+anything the data can be asked; the shape of the conditional distribution,
+by contrast, is a question the data can answer, and @sec-selection puts
+it to them.
 
-$ y_(i j) = -log_10 (max(1 - a_(i j), epsilon)) $ <eq-response>
+Accuracy is bounded above and a non-negligible proportion of submitted
+scores attain the bound exactly. The conditional distribution of
+$a_(i j)$ is therefore specified with respect to the dominating measure
 
-with $epsilon = 5 times 10^(-4)$. Under this transformation an accuracy
-of $0.9$ maps to $y = 1$, an accuracy of $0.99$ to $y = 2$ and an
-accuracy of $0.999$ to $y = 3$; a unit increment corresponds to a
-tenfold reduction in the complement of accuracy. Truncation at $epsilon$
-is required because a maximal score gives $1 - a_(i j) = 0$. The chosen
-value corresponds to approximately half of one 100-judgement on a beatmap
-of 700 objects and therefore lies below the complement of accuracy of any
-score other than a maximal one.
+$ nu = lambda_((0,1)) + delta_1, $ <eq-measure>
+
+the sum of Lebesgue measure on the open unit interval and a unit point
+mass at one. Every candidate family below is a density with respect to
+@eq-measure, comprising an absolutely continuous part on $(0,1)$ and an
+atom at unity. Log-likelihoods computed against @eq-measure are
+comparable across those families and are not comparable with a
+log-likelihood computed against any other measure, a point that bears on
+@sec-selection.
 
 == Latent ability
 
@@ -141,69 +141,120 @@ precision with which the panel locates player $i$: it remains near its
 prior value when few scores are available and contracts as evidence
 accumulates.
 
-== Item response and dispersion functions
+== Channels <sec-channels>
 
-Item $j$ is characterised by two functions of ability rather than by a
-scalar difficulty. The response function $m_j : RR -> RR$ gives the
-conditional expectation of $y$; the dispersion function
-$s_j : RR -> RR_(>0)$ gives the conditional standard deviation. Only
-$m_j$ is constrained to be non-decreasing. The dispersion is left free to
-rise and fall across the ability range, since an item may discriminate
-within a band of ability while players below that band fail uniformly and
-players above it succeed uniformly.
+Item $j$ is characterised not by a scalar difficulty but by a conditional
+distribution
+$D_(j)(theta)$ over accuracy. A family fixes the functional form of that
+distribution and declares the quantities it requires. Each such quantity
+is a channel: a real-valued function of ability, carried per item, and
+supplied to the family at whatever ability is being evaluated.
 
-Both are constructed from a common basis. Fix $K$ knots
+A channel declares one of three restrictions. A channel may be required
+to be non-decreasing in ability, required to be non-increasing, or left
+unconstrained. Restrictions are imposed where the substantive meaning of
+the channel demands them: the location of the conditional distribution
+must not fall as ability rises, whereas its dispersion is left free,
+since an item may discriminate within a band of ability while players
+below that band fail uniformly and players above it succeed uniformly.
+
+All channels are constructed from a common basis. Fix $K$ knots
 $t_1 < dots.c < t_K$, equally spaced with separation $w$, and define at
 each knot the logistic ramp
 
 $ p_k (theta) = (1 + exp(-(theta - t_k) \/ w))^(-1). $ <eq-ramp>
 
-The response function is an offset plus a non-negative combination of
+A non-decreasing channel is an offset plus a non-negative combination of
 ramps,
 
-$ m_j (theta) = a_j + sum_(k=1)^K c_(j k) p_k (theta),
-  quad c_(j k) = log(1 + exp(u_(j k))), $ <eq-mean>
+$ c_j (theta) = ell_j + sum_(k=1)^K g_(j k) p_k (theta),
+  quad g_(j k) = log(1 + exp(u_(j k))), $ <eq-rising>
 
-in which $a_j in RR$ and $u_(j k) in RR$ are free. Since $c_(j k) >= 0$
-by construction and each $p_k$ is increasing, $m_j$ is non-decreasing at
-every admissible parameter value; monotonicity is imposed by the
-parameterisation and requires no constrained optimisation. The derivative
-is available in closed form,
+in which $ell_j in RR$ and $u_(j k) in RR$ are free. Since
+$g_(j k) >= 0$ by construction and each $p_k$ is increasing, $c_j$ is
+non-decreasing at every admissible parameter value; the restriction is
+imposed by the parameterisation and requires no constrained optimisation.
+A non-increasing channel is the negation of @eq-rising.
 
-$ m'_j (theta) = w^(-1) sum_(k=1)^K c_(j k) p_k (theta)(1 - p_k (theta)), $ <eq-slope>
-
-and admits interpretation as the discriminating power of item $j$ at
-ability $theta$, being the increase in expected transformed accuracy per
-unit increase in ability. An item for which $m'_j$ is near zero over the
-region occupied by its observed players yields scores nearly
-uninformative about ability.
-
-The dispersion function is specified on the logarithmic scale using the
-derivatives of the same ramps, normalised to unit maximum,
+An unconstrained channel is specified using the derivatives of the same
+ramps, normalised to unit maximum,
 
 $ phi_k (theta) = 4 p_k (theta)(1 - p_k (theta)), $
 
 so that
 
-$ log s_j (theta) = b_j + sum_(k=1)^K e_(j k) phi_k (theta), $ <eq-spread>
+$ c_j (theta) = ell_j + sum_(k=1)^K e_(j k) phi_k (theta), $ <eq-free>
 
-with $b_j in RR$ and $e_(j k) in RR$ free and unsigned. Exponentiation
-guarantees positivity at every parameter value.
+with $ell_j in RR$ and $e_(j k) in RR$ free and unsigned. Outside the
+knot range @eq-free returns to $ell_j$, which is the appropriate
+behaviour for a quantity with no reason to trend. Every channel is
+differentiable in $theta$ in closed form, a fact @eq-objective and
+@sec-information both rely upon.
 
-== Observation model
+== Candidate families <sec-families>
 
-Conditional on ability, the response is taken to be Gaussian:
+Three families are implemented. Each specifies an atom
+$omega_j (theta) in (0,1)$ at unit accuracy through a non-decreasing
+channel, the probability of a maximal score being taken not to fall with
+ability, and distributes the remaining mass over $(0,1)$.
 
-$ y_(i j) | theta ~ cal(N)(m_j (theta), s_j (theta)^2). $ <eq-likelihood>
+The first is a beta distribution parameterised by its mean and
+concentration. Writing $m_j (theta) in (0,1)$ for the mean and
+$kappa_j (theta) > 0$ for the concentration, the density with respect to
+@eq-measure is
 
-@eq-likelihood is provisional. The realised outcome of a play is
-not a single scalar: pass and failure, combo, judgement counts and
-accuracy each behave differently and encounter distinct boundaries. The
-interface between the item model and the ability model is confined to the
-map $p_j : RR -> "Dist"(cal(X)_j)$, and the ability model consumes only
-the conditional log-likelihood together with its first two derivatives in
-$theta$, so that @eq-likelihood may be replaced without consequence
-elsewhere.
+$ f_j (a | theta) = cases(
+  omega_j (theta) & a = 1,
+  (1 - omega_j (theta)) dot "Beta"(a; m_j kappa_j, (1 - m_j) kappa_j)
+    quad & a in (0,1),
+) $ <eq-beta>
+
+with $m_j$ the logistic transform of a non-decreasing channel and
+$kappa_j$ the exponential of an unconstrained one. The mean is the
+natural carrier of the monotonicity restriction under this
+parameterisation.
+
+The second is a normal distribution on the logit of accuracy. With
+location $eta_j (theta)$ non-decreasing and scale $tau_j (theta) > 0$
+unconstrained, the continuous part is
+
+$ f_j (a | theta) = (1 - omega_j (theta)) dot
+  (phi.alt((op("logit") a - eta_j) \/ tau_j)) / (tau_j a (1 - a)),
+  quad a in (0,1), $ <eq-logitnormal>
+
+$phi.alt$ denoting the standard normal density and the denominator the
+Jacobian of the logit, which renders @eq-logitnormal a density on
+accuracy rather than on its transform. Its dispersion is a free parameter
+rather than a quantity tied to its location, and its tails near either
+bound are heavier than those of @eq-beta.
+
+The third is a two-component mixture of beta distributions, intended to
+separate a run that proceeds as the player's ability implies from one
+that does not. The second component is located below the first by an
+amount $d_j (theta) > 0$ on the logit scale, carries its own
+concentration, and is entered with probability $pi_j (theta)$ supplied by
+a non-increasing channel, the frequency of such runs being taken not to
+rise with ability. The family requires six channels against the three of
+@eq-beta and @eq-logitnormal.
+
+== Interface to the ability model <sec-interface>
+
+The ability model does not observe which family is in use. It requires of
+$D_j (theta)$ only
+
+$ log f_j (a | theta), quad F_j (a | theta), quad F_j^(-1)(u | theta),
+  quad "a draw from" D_j (theta), quad
+  partial_theta log f_j (a | theta), $ <eq-interface>
+
+namely a log-density with respect to @eq-measure, a distribution
+function, a quantile function, a sampling routine and the derivative of
+the log-density in ability. A family supplies the first, the second, the
+fourth and the partial derivatives of the log-density with respect to
+each of its channels; the quantile function is obtained by inversion of
+$F_j$ and @eq-interface by the chain rule through @eq-rising and
+@eq-free. Replacing a family, or introducing one over a richer outcome
+space than accuracy alone, therefore requires no modification of the
+estimation procedure.
 
 = Estimation
 
@@ -213,7 +264,7 @@ Let $O subset.eq {1, dots, I} times {1, dots, J}$ denote the set of
 observed cells, $I$ the number of players and $J$ the number of items.
 Estimation minimises
 
-$ L = sum_((i,j) in O) EE_(theta ~ Q_i) [-log p_j (y_(i j) | theta)]
+$ L = sum_((i,j) in O) EE_(theta ~ Q_i) [-log f_j (a_(i j) | theta)]
     + sum_(i=1)^I "KL"(Q_i || P)
     + R_"pop" + R_"item", $ <eq-objective>
 
@@ -232,11 +283,11 @@ $ "KL"(cal(N)(mu, sigma^2) || cal(N)(0,1))
 The likelihood alone does not determine the scale of $theta$. Under the
 reparameterisation $theta arrow.r kappa theta$ with $kappa > 0$, the
 substitutions $t_k arrow.r kappa t_k$ and $w arrow.r kappa w$ leave every
-$p_k$, and hence every fitted value, unchanged. Location is free in the
-same way. The ability scale is therefore not estimable from
-@eq-likelihood, and interpretation of $theta_i$ in units of population
-dispersion, or of $Phi(theta_i)$ as a population quantile, is unavailable
-without further restriction.
+$p_k$, and hence every channel and every fitted value, unchanged.
+Location is free in the same way. The ability scale is therefore not
+estimable from the likelihood, and interpretation of $theta_i$ in units
+of population dispersion, or of $Phi(theta_i)$ as a population quantile,
+is unavailable without further restriction.
 
 The penalty $R_"pop"$ supplies that restriction. Writing
 $macron(mu) = I^(-1) sum_i mu_i$ and
@@ -255,277 +306,201 @@ proportion of the population below player $i$.
 The population so constrained is the sampled panel and not the playing
 population. Players are drawn from logarithmically spaced ranking pages,
 a design that over-represents high ability by construction. The
-proportion $Phi(theta_i)$ is accordingly a quantile of the panel, and the
-top-fifty stratum is located near the 87th percentile of the panel rather
-than near the upper extreme of the game.
+proportion $Phi(theta_i)$ is accordingly a quantile of the panel.
 
 == Partial pooling across items
 
-The panel contains items observed on few players, for which the twelve
-shape parameters of @eq-mean and @eq-spread are not separately estimable.
-Each item is shrunk towards the panel mean of the corresponding
-parameter,
+The panel contains items observed on few players, for which the $K + 1$
+parameters of each channel are not separately estimable. Each item is
+shrunk towards the panel mean of the corresponding parameter,
 
-$ R_"item" = lambda_c sum_(j,k) (u_(j k) - macron(u)_k)^2
-           + lambda_s sum_(j,k) (e_(j k) - macron(e)_k)^2
-           + lambda_l sum_j [(a_j - macron(a))^2 + (b_j - macron(b))^2], $ <eq-pool>
+$ R_"item" = sum_(c) lambda_c sum_(j,k) (v^c_(j k) - macron(v)^c_k)^2
+           + lambda_ell sum_(c, j) (ell^c_j - macron(ell)^c)^2, $ <eq-pool>
 
-a bar denoting the mean over items. The gradient of the first term with
-respect to $u_(l k)$ is $2 lambda_c (u_(l k) - macron(u)_k)$, the
-contributions through $macron(u)_k$ cancelling because deviations from a
-mean sum to zero.
+in which $c$ indexes the channels of the family in use, $v^c_(j k)$
+denotes the shape parameter of channel $c$ at knot $k$ for item $j$,
+whether $u_(j k)$ of @eq-rising or $e_(j k)$ of @eq-free, and a bar
+denotes the mean over items. The gradient of the first term with respect
+to a single $v^c_(l k)$ is $2 lambda_c (v^c_(l k) - macron(v)^c_k)$, the
+contributions through $macron(v)^c_k$ cancelling because deviations from
+a mean sum to zero.
 
-The separation of $lambda_c$ from $lambda_s$ is material and is
-documented in @sec-hyper. The two were initially a single coefficient,
-under which no value proved satisfactory: at small values the fitted
-dispersion of a sparsely observed item contracts onto its own observed
-scores and the held-out predictive density degrades severely, while at
-values large enough to prevent this the response functions of all items
-collapse onto a common shape.
+The coefficient $lambda_c$ is declared per channel and per family rather
+than shared. The requirement is not uniform across channels: a dispersion
+channel weakly penalised will contract onto the observed scores of a
+sparsely observed item and claim a predictive density no withheld score
+can attain, whereas the same coefficient applied to a location channel
+collapses the response of all items onto a common shape. The coefficient
+$lambda_ell$ governs the per-item level of every channel and is shared.
 
 == Numerical integration
 
-The expectation in @eq-objective admits no closed form, $m_j$ and $s_j$
+The expectation in @eq-objective admits no closed form, the channels
 being non-linear in $theta$. It is evaluated by Gauss--Hermite quadrature,
 
 $ EE_(theta ~ cal(N)(mu, sigma^2))[f(theta)]
   approx sum_(q=1)^Q W_q f(mu + sqrt(2) sigma x_q), $ <eq-quad>
 
 with abscissae $x_q$ and weights $W_q = w_q \/ sqrt(pi)$ normalised to
-sum to unity. We take $Q = 7$.
+sum to unity.
 
 == Optimisation
 
-All parameters, namely $mu_i$ and $log sigma_i$ for each player and
-$a_j$, $u_(j k)$, $b_j$ and $e_(j k)$ for each item, are optimised
-jointly by Adam. The quantity $log sigma_i$ is confined to
-$[log 0.02, log 3]$, a posterior width approaching zero reducing
-@eq-quad to evaluation at a point and eliminating the gradient with
-respect to $sigma_i$.
+All parameters, namely $mu_i$ and $log sigma_i$ for each player and, for
+each item, the level and the $K$ shape parameters of every channel, are
+optimised jointly by Adam. The quantity $log sigma_i$ is confined to a
+bounded interval, a posterior width approaching zero reducing @eq-quad to
+evaluation at a point and eliminating the gradient with respect to
+$sigma_i$.
 
-The implementation depends on `numpy` alone and gradients of
-@eq-objective are derived analytically rather than by automatic
-differentiation. Invoking the estimation routine with `--check-gradient`
-compares them with central differences at randomly chosen coordinates.
-The largest relative discrepancy observed is $5.5 times 10^(-8)$ for the
-gradient of the objective, $5.8 times 10^(-9)$ for the first derivative
-of a single score's log-likelihood in $theta$ and $1.0 times 10^(-6)$ for
-the second, the last being consistent with the truncation error of a
-second-order central difference.
+Gradients of @eq-objective are derived analytically rather than by
+automatic differentiation. Each family supplies the partial derivatives
+of its log-density with respect to its own channels; the remainder of the
+gradient, namely the propagation through @eq-rising and @eq-free to the
+item parameters and through @eq-quad to $mu_i$ and $log sigma_i$, is
+common to all families and is written once.
 
-= Fixed quantities <sec-hyper>
+The inner loop is compiled. Evaluated in array form, the calculation
+materialises every intermediate quantity across all observations
+simultaneously, and the resulting memory traffic dominates the arithmetic.
+Each family therefore supplies its log-density and channel gradients
+twice: once in array form, used for reporting and for quantities computed
+outside the descent, and once as a scalar routine compiled ahead of the
+first iteration, used within it. The compiled loop evaluates the ramps at
+one observation's ability, assembles that observation's channels, obtains
+the log-density and its gradient, and accumulates into both the item and
+the player parameters without leaving registers. Observations are
+partitioned into contiguous blocks, one per thread, each accumulating
+into a private gradient buffer, the buffers being summed on completion.
 
-@tab-hyper records each fixed quantity, its value and the basis on which
-it was set. Where a value was selected by search, the criterion is the
-mean held-out log predictive density defined in @sec-predictive, larger
-values being preferred.
+Two verifications are available under `--check-gradient`. The analytic
+gradient of @eq-objective is compared with central differences at
+randomly chosen coordinates. Separately, and for every family rather than
+only the one in use, the compiled scalar routine is compared with the
+array implementation from which it was written, since the descent
+exercises only the former and every reported quantity only the latter.
 
-#v(0.4em)
+= Discriminating power <sec-information>
 
-#figure(
-  table(
-    columns: (auto, auto, 1fr),
-    stroke: none,
-    align: (left, left, left),
-    inset: (x: 0.5em, y: 0.42em),
-    table.hline(),
-    table.header([*Quantity*], [*Value*], [*Basis*]),
-    table.hline(),
+The contribution of an item to the location of a player is quantified by
+the Fisher information carried by a single score,
 
-    [$epsilon$], [$5 times 10^(-4)$],
-    [Fixed below the complement of accuracy attainable by any non-maximal
-     score on a beatmap of typical object count.],
+$ I_j (theta) = EE_(a ~ D_j (theta))
+  [(partial_theta log f_j (a | theta))^2], $ <eq-information>
 
-    [$K$], [6],
-    [Search over ${3, 4, 6, 9}$ giving $-0.454$, $-0.456$, $-0.456$ and
-     $-0.457$. The criterion is insensitive over this range.],
+evaluated by sampling from $D_j (theta)$, which @eq-interface provides.
+An item for which $I_j$ is near zero over the region occupied by its
+observed players yields scores nearly uninformative about ability.
 
-    [$t_1, t_K$], [$-2, +2$],
-    [Fixed at two standard deviations of the constrained population.],
+@eq-information replaces the derivative of a conditional mean, which was
+the corresponding quantity under a model with a scalar response. A
+derivative of that kind is expressed in units of the scale on which the
+response was recorded and is therefore not comparable across a change of
+that scale; the response here is the accuracy itself and no such scale
+remains. @eq-information is expressed in units of precision, so that an
+item attaining unity contributes as much as the prior $P$ of
+@sec-scale in locating a player who has attempted it.
 
-    [$w$], [$0.8$], [Determined by $K$ and the knot range.],
+The same quantity governs incremental revision. Writing
+$l(theta) = log f_j (a_(i j) | theta)$ and taking
+$g = l'(mu_i)$ and $h = -l''(mu_i)$, a Laplace step about $mu_i$ gives
 
-    [$Q$], [7], [Fixed.],
+$ sigma_"new"^(-2) = sigma_i^(-2) + h, quad
+  mu_"new" = mu_i + g \/ (sigma_i^(-2) + h). $ <eq-laplace>
 
-    [Adam iterations], [600],
-    [Search against 2000, which alters the criterion by $0.001$.],
+The quantity $h$ is a realised curvature rather than its expectation, and
+a distribution with an atom against a bound is not log-concave throughout;
+$h$ may therefore be negative and drive the revised precision to zero or
+below, in which case @eq-laplace is rejected and the posterior stands.
+Where the score is consequential, re-estimation against @eq-objective is
+to be preferred to a step.
 
-    [Adam step size], [$0.05$], [Fixed.],
+= Selection of the family <sec-selection>
 
-    [$sigma$ bounds], [$[0.02, 3]$],
-    [Fixed to exclude the degeneracy at zero width.],
+The family is not fixed by assumption. Candidates are compared on
+withheld cells by two criteria.
 
-    [$lambda_p$], [$1.0$],
-    [Fixed. The realised population has mean $-0.012$ and standard
-     deviation $0.999$.],
+The first is the mean log predictive density on cells withheld at random,
+the predictive density being obtained by integrating $f_j$ against the
+fitted posterior $Q_i$ by @eq-quad. Comparison is legitimate because
+every candidate of @sec-families is a density with respect to the common
+measure @eq-measure. A model of the response on any other scale cannot be
+entered into the same comparison, its log-density carrying the units of
+whatever measure it was taken against.
 
-    [$lambda_c$], [$2.0$],
-    [Search over ${0.5, 2, 10, 50}$ giving $-0.538$, $-0.456$, $-0.454$
-     and $-0.455$. The smallest value within the plateau is preferred,
-     larger values eliminating between-item variation in @eq-slope.],
+The second is calibration. For each withheld cell define the probability
+integral transform
 
-    [$lambda_s$], [$50.0$],
-    [Search over ${0.5, 2, 10, 50, 10^3}$ giving $-1.163$, $-0.517$,
-     $-0.461$, $-0.455$ and $-0.458$. Under a single coefficient shared
-     with $lambda_c$ at $0.1$ the criterion reaches $-146$.],
-
-    [$lambda_l$], [$0.05$],
-    [Fixed. Items differ substantially in mean response and in
-     dispersion, and these parameters are estimable from the data.],
-    table.hline(),
-  ),
-  caption: [Fixed quantities of the estimation procedure.],
-) <tab-hyper>
-
-= Empirical behaviour <sec-behaviour>
-
-== Held-out predictive comparison <sec-predictive>
-
-Fifteen per cent of observed cells were withheld at random, the model
-estimated on the remainder and the mean log predictive density and root
-mean squared error evaluated on the withheld cells. For the present model
-the predictive density is obtained by integrating @eq-likelihood against
-the fitted posterior $Q_i$ by @eq-quad. All candidates were evaluated on
-an identical set of cells, restricted to those for which the covariates
-required by the pp-based baseline are available.
-
-#v(0.4em)
-
-#figure(
-  table(
-    columns: (1fr, auto, auto),
-    stroke: none,
-    align: (left, right, right),
-    inset: (x: 0.6em, y: 0.42em),
-    table.hline(),
-    table.header([*Predictor*], [*Log density*], [*RMSE*]),
-    table.hline(),
-    [Marginal Gaussian], [$-0.693$], [$0.484$],
-    [Player pp and star rating], [$-0.634$], [$0.456$],
-    [Player effect and item effect], [$-0.524$], [$0.401$],
-    [The same, dispersion by item], [$-0.503$], [$0.401$],
-    [Response function at $mu_i$], [$-0.495$], [$0.397$],
-    [Response function under $Q_i$], [$bold(-0.456)$], [$bold(0.397)$],
-    table.hline(),
-  ),
-  caption: [
-    Held-out performance on 2,818 withheld cells. The response is
-    @eq-response, so that both columns are in units of the transformed
-    scale.
-  ],
-) <tab-predictive>
-
-The second row is the comparison of principal interest, being the
-predictive performance attainable from the official quantities alone,
-namely the global pp of the player and the star rating of the item under
-the modifier combination played, without observation of the score. The
-proposed model improves upon it in both columns.
-
-Two further comparisons are informative. The improvement from the third
-row to the fourth is attributable to item-specific dispersion alone, the
-conditional mean being unchanged. The improvement from the fifth row to
-the sixth is attributable to integration against the posterior rather
-than evaluation at its mode, and is of comparable magnitude, which
-indicates that the variational treatment of ability is not a formal
-refinement only.
-
-== An item across the ability range
-
-@tab-item reports the fitted response and dispersion for the most
-frequently observed item of the panel at six values of ability. The
-conditional mean is reported as accuracy, obtained by inverting
-@eq-response.
-
-#v(0.4em)
-
-#figure(
-  block(breakable: false)[
-    #table(
-      columns: 4,
-      stroke: none,
-      align: (right, right, right, left),
-      inset: (x: 0.8em, y: 0.4em),
-      table.hline(),
-      table.header([$theta$], [$m_j (theta)$], [$s_j (theta)$],
-                   [$m_j plus.minus s_j$]),
-      table.hline(),
-      [$-2$], [71.27%], [0.214], [52.97% to 82.45%],
-      [$-1$], [93.72%], [0.322], [86.82% to 97.01%],
-      [$0$],  [98.39%], [0.524], [94.61% to 99.52%],
-      [$+1$], [99.35%], [0.636], [97.18% to 99.85%],
-      [$+2$], [99.62%], [0.769], [97.77% to 99.94%],
-      [$+3$], [99.72%], [0.788], [98.26% to 99.95%],
-      table.hline(),
-    )
-  ],
-  caption: [
-    Fitted response and dispersion for beatmap 714001 without modifiers,
-    observed on 840 players.
-  ],
-) <tab-item>
-
-The two dispersion columns of @tab-item vary in opposite directions. The
-conditional standard deviation on the transformed scale increases
-monotonically from $0.214$ to $0.788$, while the corresponding interval
-on the accuracy scale contracts from 29 percentage points to under two.
-Both statements describe the same fitted object. The transformation
-@eq-response expands the neighbourhood of unit accuracy, so that a fixed
-increment of $s_j$ subtends a diminishing interval of accuracy as $m_j$
-approaches the bound.
-
-== Heterogeneity of dispersion
-
-Evaluated at the median ability of the players observed on each item,
-$s_j$ ranges over $[0.103, 0.877]$ across the panel with interquartile
-range $[0.226, 0.360]$. Dispersion therefore differs between items by
-approximately an order of magnitude, which accounts for the improvement
-of the fourth row over the third in @tab-predictive.
-
-Within an item, comparing $s_j$ one unit of ability below the median of
-its observed players with the value one unit above, the median ratio is
-$1.8$. Dispersion is thus not constant in ability and the specification
-@eq-spread is not redundant.
-
-== Calibration
-
-For each observed cell define the probability integral transform
-
-$ u_(i j) = EE_(theta ~ Q_i)
-  [Phi((y_(i j) - m_j (theta)) \/ s_j (theta))]. $ <eq-pit>
+$ u_(i j) = EE_(theta ~ Q_i)[F_j (a_(i j) | theta)]. $ <eq-pit>
 
 Under a correctly specified model the $u_(i j)$ are marginally uniform on
-$(0,1)$ irrespective of item and player, so that their histogram
-constitutes a diagnostic requiring no held-out data. On the present panel
-the histogram is close to level, which indicates that the fitted
-dispersion is approximately correct in aggregate.
+$(0,1)$ irrespective of item and player. Two summaries are reported: the
+mean of $u_(i j)$, which should equal one half and whose departure
+indicates the direction of the error, and the largest absolute deviation
+of their empirical distribution function from that of the uniform.
 
-Stratifying @eq-pit by the discriminating power @eq-slope of the item
-reveals a monotone departure. Scores on items of low discrimination fall
-systematically below their predicted position and scores on items of high
-discrimination above it, the mean of $u_(i j)$ departing from one half by
-approximately $0.01$ at either extreme.
+A maximal score requires care under @eq-pit. Such a score occupies no
+single position within its predicted distribution, the distribution
+function jumping at unity by $omega_j$, and assigning it the upper
+endpoint would concentrate a fixed proportion of the transform at one and
+destroy the uniformity on which the diagnostic rests. A point is
+therefore drawn uniformly from the interval spanned by the jump. Where a
+deterministic value is required, as when the diagnostic is displayed and
+must not vary between evaluations, the midpoint of that interval is taken
+instead, at the cost of the property just described.
 
-= Limitations
+Two classes of baseline are evaluated alongside the candidates, each
+fitted under the same family and therefore against the same measure.
+The first ignores ability entirely, comprising a single distribution
+fitted to the whole panel and a distribution per item. The second is
+fitted to the official quantities alone, namely the global pp of the
+player and the star rating of the item under the modifier combination
+played, entered as a linear predictor for each channel. The second is the
+comparison of principal interest, being the predictive performance
+attainable without observation of the score. An item lacking a star
+rating is not discarded from that comparison; the rating and its
+interaction are set to zero and an indicator column admitted, so that the
+baseline estimates what the official quantities are worth when they are
+silent, and all candidates are evaluated on an identical set of cells.
 
-Three deficiencies are known.
+The star rating enters no part of the model itself. It is a covariate of
+the baseline alone, and no withheld set is restricted to the cells on
+which it happens to be available.
 
-First, the observation model @eq-likelihood is Gaussian over a single
-scalar, whereas the realised outcome is multivariate and bounded. This is
-the deficiency most readily remedied, for the reason given following
-@eq-likelihood.
+= Limitations <sec-limits>
 
-Second, the composition of $O$ is not modelled. Restriction to probed
-cells removes truncation on points, but the choice of the player as to
-what to play remains, and that choice depends on the anticipated outcome.
-Selection of this kind is not ignorable and its omission biases the item
-parameters.
+Four deficiencies are known.
+
+First, the outcome modelled is a scalar, whereas the realised outcome of
+a play is not. Pass and failure, maximum combo and the counts of each
+judgement each behave differently and encounter distinct boundaries. The
+appropriate specification is a distribution over the vector of those
+quantities. This is the deficiency most readily remedied, the interface
+@eq-interface being indifferent to the outcome space over which
+$D_j (theta)$ is defined.
+
+Second, the composition of $O$ is not modelled. Membership of a
+hundred-best list is truncated on points, and the choice of the player as
+to what to attempt depends on the anticipated outcome. Selection of this
+kind is not ignorable and its omission biases the item parameters. The
+origin of each cell is recorded, so that the information a selection
+model would require is available; no such model is specified.
 
 Third, the constraint @eq-pop fixes the first two moments of the fitted
-population and leaves higher moments free. On the panel restricted to
-probed cells the realised distribution is close to standard normal, with
-skewness $-0.20$, excess kurtosis $-0.07$ and largest absolute deviation
-of the empirical distribution function from $Phi$ equal to $0.028$. On
-the unrestricted panel, where the number of observations per player is
-larger and the likelihood dominates the prior, the same deviation reaches
-$0.115$ and the interpretation of $Phi(theta_i)$ as a quantile is
-correspondingly weakened.
+population and leaves higher moments free. Where the number of
+observations per player is large the likelihood dominates the prior, the
+realised distribution departs appreciably from standard normal, and the
+interpretation of $Phi(theta_i)$ as a quantile is correspondingly
+weakened.
+
+Fourth, the atom channel of @sec-families is estimated with a level per
+item but with substantially no dependence on ability, the fitted
+$omega_j (theta)$ being nearly constant across the ability range for
+almost every item. The observed frequency of maximal scores does depend
+on ability, and markedly so within a single item, so that the fitted
+behaviour reflects the estimation procedure rather than the data. Whether
+the cause is the penalty of @eq-pool applied to a channel whose gradient
+is small, the initialisation of that channel near a flat configuration,
+or both, has not been determined. Until it is, the third channel of each
+family should be read as an item-level rate and not as a function of
+ability.
