@@ -158,12 +158,6 @@ def header():
                 ),
             ),
             rx.hstack(
-                rx.checkbox(
-                    "Include the top-100 lists",
-                    checked=Explorer.every_cell,
-                    on_change=Explorer.set_every_cell,
-                    class_name="text-sm",
-                ),
                 rx.button(
                     "Fit again from the database",
                     on_click=Explorer.refit,
@@ -218,7 +212,7 @@ def map_row(row):
             ),
         ),
         rx.table.cell(row["players"], class_name="figures"),
-        rx.table.cell(row["slopeText"], class_name="figures"),
+        rx.table.cell(row["tellsText"], class_name="figures"),
         rx.table.cell(row["atMedianText"], class_name="figures"),
         rx.table.cell(row["starsText"], class_name="figures"),
         rx.table.cell(row["gapCurveText"], class_name="figures"),
@@ -264,13 +258,14 @@ def maps_tab():
                         "Each row is one beatmap with one set of mods. "
                         "The same beatmap with DT is a different row, "
                         "because DT changes how hard it is.",
-                        "Separates by: the change in expected accuracy "
-                        "for one step of skill. The fit reads this number "
-                        "where the players of this map sit. A value near "
-                        "zero means that all players get almost the same "
-                        "accuracy.",
-                        "Average player: the accuracy that the curve "
-                        "gives at the middle of the panel. If only strong "
+                        "Tells you: how much one score here tells you "
+                        "about the player. The fit reads this number "
+                        "where the players of this map sit. A map at 1.0 "
+                        "is worth as much as everything the fit assumed "
+                        "before it saw any score. A value near zero means "
+                        "that all players get almost the same result.",
+                        "Average player: the accuracy that the map gives "
+                        "at the middle of the panel. If only strong "
                         "players play this map, the fit has no data "
                         "there. Then it uses similar maps.",
                         "pp gap: the pp of this map, less the pp of maps "
@@ -282,7 +277,7 @@ def maps_tab():
                     align="center",
                 ),
                 table(
-                    ["map", "players", "separates by", "average player",
+                    ["map", "players", "tells you", "average player",
                      "stars", "pp gap"],
                     rx.foreach(Explorer.map_rows, map_row),
                 ),
@@ -330,20 +325,21 @@ def maps_tab():
                             class_name="text-sm text-[var(--ink-2)]",
                         ),
                         explain(
-                            "The line is the expected accuracy at each "
-                            "skill. The band is one spread on each side "
-                            "of the line. Both come from the scores of "
-                            "this map. If the map has few scores, the fit "
-                            "moves them toward the average map.",
+                            "The line is the middle of the accuracy this "
+                            "map gives at each skill. Eight scores in ten "
+                            "fall inside the band. Both come from the "
+                            "scores of this map. If the map has few "
+                            "scores, the fit moves them toward the "
+                            "average map.",
                             "Each dot is one score. The horizontal "
                             "position is the skill of the player. The "
                             "vertical position is the accuracy. For a map "
                             "with more than 1200 scores, this chart shows "
                             "an even sample of them.",
-                            "The vertical scale is not linear. The step "
-                            "from 99% to 99.9% is as wide as the step "
-                            "from 90% to 99%. Equal steps on this scale "
-                            "are equally hard to reach.",
+                            "The vertical scale is not linear. It gives "
+                            "more room near 100%, where almost every "
+                            "score sits. This is a decision about the "
+                            "chart. The fit uses the accuracy itself.",
                         ),
                         spacing="1",
                         align="start",
@@ -547,9 +543,10 @@ def players_tab():
                             class_name="text-sm text-[var(--ink-2)]",
                         ),
                         explain(
-                            "Expected of them: the accuracy that the "
-                            "curve of this map gives at the skill of this "
-                            "player.",
+                            "Expected of them: the middle of the "
+                            "accuracy this map gives at the skill of this "
+                            "player. Half of their scores here should "
+                            "fall below it.",
                             "Where it fell: the position of the real "
                             "accuracy inside the prediction. A value of "
                             "more than 0.5 means that the player did "

@@ -8,7 +8,9 @@ dependencies = [
     "aiolimiter>=1.2.1",
     "dotenv>=0.9.9",
     "httpx>=0.28.1",
-    "numpy>=2.5.1",
+    # numba compiles the fit's inner loop and does not accept numpy 2.5 yet.
+    "numba>=0.66",
+    "numpy>=2.4,<2.5",
     "pony>=0.7.19",
     "python-dotenv>=1.2.2",
     "requests>=2.34.2",

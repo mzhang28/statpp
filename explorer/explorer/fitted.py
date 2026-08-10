@@ -1,9 +1,8 @@
 """
 The fitted model, held in memory for the pages to read.
 
-Fitting takes half a minute on the probed cells and several minutes on
-every cell, so it happens once per choice of settings and the result stays
-here. Nothing in this module is a Reflex state var: numpy stays on this
+Fitting takes a couple of minutes, so it happens once per choice of
+settings and the result stays here. Nothing in this module is a Reflex state var: numpy stays on this
 side of the line and the pages are handed plain lists of dicts.
 
 The database is read through the same read-only connection the command
@@ -12,7 +11,6 @@ line scripts use, so this runs while the sampler writes.
 
 import hashlib
 import json
-import math
 import os
 import pickle
 import sys
@@ -33,22 +31,21 @@ os.environ.setdefault("OSU_BEATMAP_CACHE", str(ROOT / "beatmap-files"))
 
 from fit_skill_and_curves import (  # noqa: E402
     NotEnoughData,
-    curve_values,
     fit_panel,
     map_columns,
     map_facts,
-    normal_cdf,
     predictive_cdf,
     prepare,
     usernames,
 )
+from outcomes import INSIDE, logit, normal_cdf  # noqa: E402
 from sample import connect_readonly  # noqa: E402
 
 DATABASE = ROOT / "osu.sqlite"
 CACHE = Path(__file__).resolve().parents[1] / ".cache"
 
 DEFAULTS = {
-    "all_cells": False,
+    "family": "logit-normal",
     "min_players": 10,
     "min_items": 5,
     "knots": 6,
@@ -57,8 +54,7 @@ DEFAULTS = {
     "steps": 600,
     "rate": 0.05,
     "population": 1.0,
-    "pool_curve": 2.0,
-    "pool_spread": 50.0,
+    "pool": {},
     "pool_level": 0.05,
     "star_window": 0.5,
     "skill_window": 0.25,
@@ -77,7 +73,7 @@ class Fitted:
     strata: list
 
     params: object
-    basis: object
+    model: object
 
     # One entry per observed cell, all four aligned.
     score_player: np.ndarray
@@ -96,21 +92,28 @@ class Fitted:
 
     def curve(self, j, lo=-3.0, hi=3.0, steps=97):
         """
-        The map's expected performance across the skill range, with the
-        band one spread either side of it.
+        The accuracy the map gives across the skill range: the middle of
+        its distribution, and the stretch eight scores in ten fall inside.
+
+        The model no longer has a mean and a spread to draw. It has a
+        distribution per skill, so what is drawn are three of its
+        quantiles, which say the same thing without assuming the shape is
+        symmetric. It is not: near 100% there is far more room below the
+        middle than above it.
         """
         skills = np.linspace(lo, hi, steps)
-        mean, spread = curve_values(
-            self.params, np.full(steps, j), skills, self.basis
-        )
+        values, _ = self.model.at(self.params, np.full(steps, j), skills)
+
+        def at(share):
+            return self.model.family.quantile(np.full(steps, share), values)
 
         return [
             {
                 "x": round(float(x), 3),
-                "mean": round(float(m), 4),
-                "band": [round(float(m - s), 4), round(float(m + s), 4)],
+                "mean": round(on_axis(m), 4),
+                "band": [round(on_axis(a), 4), round(on_axis(b), 4)],
             }
-            for x, m, s in zip(skills, mean, spread)
+            for x, m, a, b in zip(skills, at(0.5), at(0.1), at(0.9))
         ]
 
     def map_scores(self, j, cap=1200):
@@ -120,7 +123,7 @@ class Fitted:
         return [
             {
                 "x": round(float(self.players[p]["skill"]), 3),
-                "score": round(float(self.score_outcome[c]), 4),
+                "score": round(on_axis(self.score_outcome[c]), 4),
             }
             for c, p in zip(*thinned(cells, self.score_player, cap))
         ]
@@ -140,13 +143,15 @@ class Fitted:
 
     def accuracy_range(self, j):
         """
-        The stretch of the accuracy scale this map needs, and round
-        accuracies to mark it at.
+        The stretch of the axis this map needs, and round accuracies to
+        mark it at.
 
-        Left to itself the axis runs to wherever the spread band reaches,
-        which can be below zero, and zero on this scale is an accuracy of
-        nothing. The ticks are the round percentages, which land on whole
-        numbers here because the scale is a logarithm.
+        The axis is the logit of accuracy. That is a choice about drawing
+        and not about the model: a linear axis puts every score worth
+        comparing into the top twentieth of the chart, and the logit is
+        already the coordinate every family writes its location channel
+        in. The ticks carry percentages, since that is what a person
+        reads.
         """
         rows = self.curve(j) + self.map_scores(j)
 
@@ -159,14 +164,14 @@ class Fitted:
             + [r["score"] for r in rows if "score" in r]
         )
 
-        low = max(0.0, low - 0.08)
-        high = high + 0.08
+        low = low - 0.2
+        high = high + 0.2
 
         # Marked at accuracies a person would name, which are not round
         # numbers once the scale is stretched.
         marks = [
-            -math.log10(1.0 - a)
-            for a in (0.0, 0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995,
+            on_axis(a)
+            for a in (0.2, 0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995,
                       0.998, 0.999, 0.9995)
         ]
         inside = [round(t, 4) for t in marks if low <= t <= high]
@@ -203,7 +208,11 @@ class Fitted:
 
         skill = np.full(len(cells), self.players[i]["skill"])
         maps = self.score_map[cells]
-        mean, spread = curve_values(self.params, maps, skill, self.basis)
+
+        values, _ = self.model.at(self.params, maps, skill)
+        middle = self.model.family.quantile(
+            np.full(len(cells), 0.5), values
+        )
 
         rows = [
             {
@@ -213,14 +222,15 @@ class Fitted:
                 "beatmap": self.maps[int(j)]["beatmap"],
                 "version": self.maps[int(j)]["version"],
                 "url": self.maps[int(j)]["url"],
-                "expectedText": f"{accuracy_of(m):.2f}%",
+                "expectedText": f"{100.0 * float(m):.2f}%",
                 "fellAt": round(float(self.score_fell_at[c]), 3),
                 "fellAtText": f"{float(self.score_fell_at[c]):.2f}",
                 "barWidth": f"{100 * float(self.score_fell_at[c]):.0f}%",
                 "barColour": pole(float(self.score_fell_at[c]) - 0.5),
-                "accuracyText": f"{accuracy_of(self.score_outcome[c]):.2f}%",
+                "accuracyText":
+                    f"{100.0 * float(self.score_outcome[c]):.2f}%",
             }
-            for c, j, m in zip(cells, maps, mean)
+            for c, j, m in zip(cells, maps, middle)
         ]
         rows.sort(key=lambda r: -r["fellAt"])
 
@@ -334,9 +344,15 @@ def thinned(cells, lookup, cap):
     return cells, lookup[cells]
 
 
-def accuracy_of(outcome):
-    """Back from the stretched scale to a plain accuracy percentage."""
-    return round(100.0 * (1.0 - 10.0 ** (-float(outcome))), 2)
+def on_axis(accuracy):
+    """
+    An accuracy placed on the chart's vertical scale.
+
+    See accuracy_range for why the scale is the logit. Nothing outside
+    the charts uses this, and no number the model produces is stored this
+    way.
+    """
+    return float(logit(np.clip(np.asarray(accuracy, dtype=float), *INSIDE)))
 
 
 def settings_from(overrides):
@@ -395,11 +411,13 @@ def build(settings):
     params, history = fit_panel(study, knobs)
 
     facts, stars = map_facts(conn, study)
+    study.stars = stars
     columns = map_columns(study, params, facts, stars, knobs)
 
-    fell_at = predictive_cdf(
-        params, study.panel, study.basis, study.nodes, study.weights
-    )
+    # No rng, so a score of exactly 100% lands in the middle of the
+    # stretch the point mass covers rather than somewhere random in it.
+    # A page that moved its own bars between reloads would be unreadable.
+    fell_at = predictive_cdf(params, study.panel, study.model)
 
     named = usernames(conn, study.roster)
     strata, strata_order = stratum_names(conn)
@@ -439,13 +457,8 @@ def build(settings):
             "mods": mods,
             "name": facts.get(int(beatmap_id), {}).get("name", key),
             "players": int(columns["counts"][j]),
-            "slope": clean(columns["slope"][j], 3),
-            "atMedian": clean(columns["at_median"][j], 3),
-            "atMedianAccuracy": (
-                None if columns["at_median"][j] is None
-                or not np.isfinite(columns["at_median"][j])
-                else accuracy_of(columns["at_median"][j])
-            ),
+            "tells": clean(columns["information"][j], 2),
+            "atMedian": clean(columns["at_median"][j], 4),
             "typical": clean(columns["typical"][j], 2),
             "stars": clean(columns["stars"][j], 2),
             "length": clean(columns["length"][j], 0),
@@ -460,13 +473,13 @@ def build(settings):
 
         # A missing number has to reach the page as text, since the page
         # cannot tell None from zero once it is JSON.
-        for name in ("slope", "atMedian", "stars", "gapCurve", "length",
+        for name in ("tells", "atMedian", "stars", "gapCurve", "length",
                      "playcount", "livePP"):
             row[name + "Text"] = shown(row[name])
 
         row["atMedianText"] = (
-            "—" if row["atMedianAccuracy"] is None
-            else f"{row['atMedianAccuracy']:.2f}%"
+            "—" if row["atMedian"] is None
+            else f"{100.0 * row['atMedian']:.2f}%"
         )
 
         maps.append(row)
@@ -474,7 +487,7 @@ def build(settings):
     return Fitted(
         settings=settings,
         summary={
-            "cells": "every cell" if settings["all_cells"] else "probed only",
+            "family": settings["family"],
             "players": study.panel.n_players,
             "items": study.panel.n_items,
             "observations": int(len(study.panel.outcome)),
@@ -488,7 +501,7 @@ def build(settings):
         maps=maps,
         strata=strata_order,
         params=params,
-        basis=study.basis,
+        model=study.model,
         score_player=study.panel.rows,
         score_map=study.panel.cols,
         score_outcome=study.panel.outcome,

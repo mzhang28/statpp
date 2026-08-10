@@ -27,11 +27,12 @@ POLE_MID = "var(--pole-mid)"
 
 TICK = {"fill": MUTED, "fontSize": 11}
 
-# The fit works on a stretched accuracy scale, where equal steps near 100%
-# mean equal steps in how hard they are to reach. Nobody reads a score
-# that way, so the axis is turned back into the percentage it came from.
+# Charts place an accuracy by its logit, which spreads out the top of the
+# range where every score worth comparing sits. That is a decision about
+# drawing and not about the model. The ticks carry the percentage back.
 AS_ACCURACY = rx.Var(
-    "((v) => (100 * (1 - Math.pow(10, -v))).toFixed(v >= 2 ? 2 : 1) + '%')"
+    "((v) => { const a = 1 / (1 + Math.exp(-v)); "
+    "return (100 * a).toFixed(a >= 0.99 ? 2 : 1) + '%' })"
 )
 
 
@@ -93,15 +94,15 @@ def legend(*entries):
 
 def curve_chart(rows, marker, scale):
     """
-    A map's expected performance across the skill range, the band one
-    spread either side, and the scores actually set on it.
+    The accuracy a map gives across the skill range, the stretch most
+    scores fall inside, and the scores actually set on it.
 
     The scores ride in the same table as the curve and are drawn as a line
     with no stroke, since a chart that mixes areas and lines will not also
     take a scatter.
     """
     return rx.vstack(
-        legend(("expected accuracy and one spread", SERIES_1),
+        legend(("middle accuracy, and eight scores in ten", SERIES_1),
                ("each score", SERIES_2)),
         frame(
             rx.recharts.x_axis(
@@ -146,7 +147,7 @@ def curve_chart(rows, marker, scale):
                 fill_opacity=0.14,
                 connect_nulls=True,
                 is_animation_active=False,
-                name="spread",
+                name="most scores",
             ),
             rx.recharts.line(
                 data_key="mean",
@@ -155,7 +156,7 @@ def curve_chart(rows, marker, scale):
                 dot=False,
                 connect_nulls=True,
                 is_animation_active=False,
-                name="expected",
+                name="middle",
             ),
             rx.recharts.line(
                 data_key="score",

@@ -63,6 +63,7 @@ uv run diagnose.py          # residual correlation within and between strata
 uv run find_good_data.py    # the part of the data worth fitting on
 uv run fit_ability_and_difficulty.py   # solve for both together
 uv run fit_skill_and_curves.py         # skill and map curves, against the score
+uv run fit_skill_and_curves.py --compare-families
 ```
 
 Requires `OSU_CLIENT_ID` / `OSU_CLIENT_SECRET` in `.env`.
@@ -110,9 +111,9 @@ out is not known when the app starts, and a page served on one origin
 whose socket points at another connects to nothing. Nothing asks who is
 calling, so it is reachable by anything that can route to the port.
 
-It fits on first load, half a minute on the probed cells, and keeps the
-result on disk so later loads are immediate. "Refit from the database"
-reads whatever the sampler has collected since.
+It fits on first load, a couple of minutes, and keeps the result on disk
+so later loads are immediate. "Fit again from the database" reads whatever
+the sampler has collected since.
 
 ### Growing the graph
 
@@ -236,38 +237,122 @@ coordinate and the percentile reading is not available.
 What is stored per player is a belief rather than a point, a Gaussian
 `Q_i(theta) = N(theta; mu_i, sigma_i^2)`.
 
-### Each map is a curve and a spread
+### Each map is a distribution over the outcome
 
-A map is described by where performance sits at each skill level and by how
-much it varies there:
-
-```
-m_j : R -> R          expected performance at skill theta
-s_j : R -> R_{>0}     conditional spread at skill theta
-```
-
-Only `m_j` is constrained monotone. Spread is free to rise and fall across
-the range, which is what a map does when it separates players in its middle
-band while everyone below flounders alike and everyone above clears alike,
-so `s_j` is held positive and otherwise left alone. Both are splines with
-parameters partly pooled across maps, since no single map has the data to
-fit its own. The first workable outcome model is Gaussian:
+A map is not a number and not a curve. It is a conditional distribution
+over the score itself:
 
 ```
-p_j(y | theta) = N( y ; m_j(theta), s_j(theta)^2 )
+p_j : R -> Dist(X_j)      D = p_j(theta)
 ```
 
-The map's difficulty is the curve itself rather than a separate offset.
+with `X_j` the outcome space of map `j`. Everything above this line asks
+`D` for five things and knows nothing else about it:
+
+```
+log p(x)          how likely this score was
+F(x)              where the score fell inside it
+F^-1(u)           the score at any percentile
+a draw            a score the map would produce
+d log p(x)/dtheta how the likelihood moves with skill
+```
+
+The outcome fitted so far is the accuracy, exactly as it was set. It is
+not put on another scale first. A scale followed by a normal distribution
+is two assumptions where one will do, and it hides the question that
+matters, which is what shape the outcomes really have. Accuracy is bounded
+above and 1.3% of the panel sits exactly on the bound, so every candidate
+is a density on (0, 1) mixed with a point mass at 1.
+
+Each family describes its distribution by a few **channels**, and each
+channel is a function of skill. The families that exist are:
+
+- **beta + a mass at 1**, with channels for the logit of the mean, the log
+  of the concentration, and the logit of the chance of a 100%.
+- **logit-normal + a mass at 1**, with the same three, its middle and
+  spread taken on the logit scale rather than tied to each other.
+- **a two-component beta mixture + a mass at 1**, which adds how far a bad
+  run lands below a normal one and how often a run goes that way.
+
+Only the channels that must rise with skill are held monotone: the
+location, and the chance of a 100%. Everything else is free to rise and
+fall across the range, which is what a map does when it separates players
+in its middle band while everyone below flounders alike and everyone above
+clears alike. Every channel is a spline over skill with its shape partly
+pooled across maps, since no single map has the data to fit its own.
+
+The map's difficulty is that whole distribution rather than a separate
+offset.
+
+### Choosing the family
+
+Not by looking at a fit. By held-out likelihood and calibration, both on
+the same measure, which is what makes the numbers comparable at all: every
+row below puts its mass on the accuracy itself.
+
+```
+uv run fit_skill_and_curves.py --compare-families
+```
+
+On 175,723 training cells and 31,288 held out, per held-out cell:
+
+```
+family        model                           log density   centre    gap
+beta          one per map, no skill                 2.292
+beta          player pp + map star rating           2.174
+beta          skill belief + map curves             2.457    0.521   0.062
+
+logit-normal  one per map, no skill                 2.384
+logit-normal  player pp + map star rating           2.324
+logit-normal  skill belief + map curves             2.584    0.501   0.014
+
+beta-mixture  one per map, no skill                 2.373
+beta-mixture  player pp + map star rating           2.358
+beta-mixture  skill belief + map curves             2.575    0.503   0.015
+```
+
+`centre` is the average place a score took inside its own predicted
+distribution and should be 0.5. `gap` is the largest departure of those
+places from flat.
+
+The logit-normal is the default. The mixture is within 0.009 of it, which
+is nothing, so the argument between them is calibration and cost: 0.014
+against 0.015, and 15 seconds a fit against 85.
+
+Getting to that table meant fixing the pooling, and the fix was worth more
+than the choice of family. Swept on one panel and one holdout, the strength
+holding each channel's per-map level runs flat from about 2 to 40 and falls
+away sharply below 1. It had been set at 0.05. Every family gained: the
+mixture went from 2.245 to 2.601 and the logit-normal from 2.570 to 2.604.
+Each family now declares its own strength per channel in `outcomes.py`,
+because six channels carry 42 parameters per map against three channels'
+21 and need holding twice as hard, so the table above is a fair fight
+without any flags.
+
+The beta trails on likelihood and is well behind on calibration, at 0.062
+against 0.014, and no pooling moved that.
+
+Because every number here is a density on accuracy, none of them compares
+against anything measured on another scale.
+
+### Performance against expectation
+
+Where a score fell is the CDF of the distribution it was predicted from:
+
+```
+u = F_{j,theta}(x)
+```
+
+If the model is right these are uniform on (0, 1) whatever the map and
+whoever the player, so their histogram is a calibration check that needs
+no held-out data. A score of exactly 100% has no single place inside the
+distribution, only the stretch the point mass covers, and it is given a
+point in that stretch at random. Without that the uniformity is lost and
+the histogram cannot be read.
 
 ### The objective
 
 Over the observed cells `O` in `I x J`:
-
-```
-L = - sum_{(i,j) in O} log p_j(y_ij | theta_i) + R_maps + R_time
-```
-
-Carrying the player Gaussians properly makes it variational instead:
 
 ```
 L = - sum_{(i,j) in O} E_{theta ~ Q_i} [ log p_j(y_ij | theta) ]
@@ -277,6 +362,13 @@ L = - sum_{(i,j) in O} E_{theta ~ Q_i} [ log p_j(y_ij | theta) ]
 
 Map parameters and player beliefs are learned together, and training means
 optimising each `(mu_i, sigma_i)` against this objective directly.
+
+The inner loop is compiled with numba, which is what makes iterating on
+families affordable. A whole run of the default fit, two fits of 600 steps
+each over 207,000 cells and every table below, takes under a minute. Each
+family supplies a compiled kernel for one score beside its numpy version,
+and `--check-gradient` holds the two to each other as well as checking the
+whole gradient against central differences.
 
 ### What one score does to a player
 
@@ -312,39 +404,33 @@ sits, and how strongly. `h` says how much this map and this result reveal
 about skill at all, so a large `h` cuts the uncertainty. A likelihood that
 barely moves with skill gives both near zero, and the score changes nothing.
 
-### Why the flat maps stop counting
+### How much a map tells you
 
-Take an easy map where everyone above the bottom tenth full-combos it and
-accuracy among them says nothing. Then `m_j'(theta)` is near zero across
-most of the range, the likelihood hardly moves as skill moves, and the score
-updates almost nothing.
-
-Reol - No title [byfaR's Hard] is the candidate to look at first, since pp
-on it tracks a player's own level at -0.99 with slope -1, meaning everyone
-earns about the same pp there. That is a fact about pp on the map. Whether
-`m_j'` is flat for the raw outcome eventually modelled is a separate
-question, and finding out is what this model is for.
-
-A map whose expected accuracy turns over around the 80th percentile has a
-large `|m_j'(theta)|` right there, so scores on it separate the 70th from
-the 80th from the 90th.
-
-### The Gaussian is a placeholder
-
-Real outcomes are not one scalar. Fail against pass, full combo against
-not, misses, and accuracy each behave differently and run into ceilings, so
-`p_j` wants to be a bounded or mixture distribution over them.
-
-None of that reaches the skill side, because the interface between the two
-is only
+What a map is worth is the Fisher information one score there carries
+about skill:
 
 ```
-p_j : R -> Dist(X_j)
+I_j(theta) = E_{x ~ p_j(theta)} [ ( d log p_j(x | theta) / dtheta )^2 ]
 ```
 
-with `X_j` the outcome space of map `j`. The skill system reads the
-log-likelihood together with its gradient and curvature, and nothing else
-about how they were produced.
+This replaces reading the slope of an expected outcome, which could only
+be read against the scale the outcome was written in. Information carries
+no such dependence, and it is in units of precision: a map at 1.0 is worth
+as much as the whole population prior.
+
+Across the panel this runs from 0.05 to 54, with the middle four fifths
+between 0.73 and 8.13.
+
+Reol - No title [byfaR's Hard] is the map to look at first, since pp on it
+tracks a player's own level at -0.99 with slope -1, meaning everyone earns
+about the same pp there. On the raw outcome it comes out at 0.16 unmodded
+across 582 players, against a panel top of 54, so the flatness is a fact
+about the map and not only about pp.
+
+Across held-out scores, how much a score actually moves a belief tracks the
+map's information at +0.52 rank correlation, and the median belief narrows
+by 0.2% on the least informative third of maps against 0.7% on the most.
+That is the claim that a map nobody is separated on stops counting.
 
 ### Which cells are observed still needs its own model
 
@@ -361,18 +447,25 @@ depends on the result, so ignoring it biases the fit.
 A probe that came back empty says the player has never submitted a play on
 the map. That is missing data, not a poor performance.
 
-Probes are the way in, because which cells get probed is our decision rather
-than the player's or the pp cut's. Inside the probed panel the pp truncation
-is gone, leaving the player's own choice of what to play as the one
-mechanism to model. The playcount effect measured above is that selection
-showing up as farm.
+The panel carries both kinds of cell, so both mechanisms are live in it.
+Fitting the probed cells alone removes the pp cut at the price of three
+quarters of the data. It leaves the player's own choice of what to play
+unmodelled either way. Which cell came from where is on the row, in
+`Probe`, so a selection model can read it instead of the panel being cut
+to suit one. The playcount effect measured above is that selection showing
+up as farm.
 
-*Validate:* hold out observed cells and predict them, against predicting
-them from pp directly. Check that the fitted population of skills is still
-standard normal, since the percentile reading rests on it. Read `m_j'` on
-maps everyone clears and see whether it comes out flat. Then recompute the
-length and playcount correlations: if they have not fallen towards zero,
-the correction did not work.
+*Validate:* held-out cells are predicted at 2.600 per cell against 2.332
+from the official numbers alone. Maps everyone clears come out
+uninformative, Reol [byfaR's Hard] at 0.16 against a panel top of 54.
+
+The fitted population comes out at mean +0.201 and spread 0.949, with the
+largest gap from a standard normal at 0.111 of the population against
+0.048 on the probed cells alone, so the percentile reading has loosened.
+The pp discrepancy still tracks playcount, at -0.71 against the pp fit's
+-0.45, and the probed cells gave -0.58. Both of those are the top-100 cut
+arriving with the data it came with, and both are what the selection model
+above is for.
 
 
 ## Roadmap

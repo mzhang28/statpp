@@ -22,8 +22,8 @@ CURRENT = {"fit": None}
 ROWS_SHOWN = 250
 
 MAP_ORDERS = {
-    "steepest curve": ("slope", True),
-    "flattest curve": ("slope", False),
+    "tells you most about the player": ("tells", True),
+    "tells you least about the player": ("tells", False),
     "hardest for an average player": ("atMedian", False),
     "easiest for an average player": ("atMedian", True),
     "most players": ("players", True),
@@ -66,8 +66,6 @@ class Explorer(rx.State):
     working: str = ""
     summary: dict = {}
 
-    every_cell: bool = False
-
     map_query: str = ""
     map_mods: str = "any"
     map_order: str = "most players"
@@ -78,7 +76,7 @@ class Explorer(rx.State):
     player_order: str = "highest skill"
     chosen_player: int = -1
 
-    falls_split: str = "how much the map separates players"
+    falls_split: str = "how much the map tells you"
 
     # Song titles arrive after the page does, so they live beside the maps
     # rather than inside them: the fit does not need them and should not
@@ -116,9 +114,7 @@ class Explorer(rx.State):
             self.working = "The fit reads the database again."
             self.ready = False
 
-        fit = await asyncio.to_thread(
-            fitted.load, {"all_cells": self.every_cell}, True
-        )
+        fit = await asyncio.to_thread(fitted.load, None, True)
         CURRENT["fit"] = fit
 
         async with self:
@@ -129,10 +125,6 @@ class Explorer(rx.State):
             self.working = ""
 
         return Explorer.name_the_maps
-
-    @rx.event
-    def set_every_cell(self, value: bool):
-        self.every_cell = value
 
     @staticmethod
     def busiest_map(fit):
@@ -248,7 +240,7 @@ class Explorer(rx.State):
     @rx.var
     def map_range(self) -> dict:
         if not self.ready or self.chosen_map < 0:
-            return {"domain": [0, 3.4], "ticks": [0, 1, 2, 3]}
+            return {"domain": [-1.0, 7.0], "ticks": [0.0, 2.2, 4.6, 6.9]}
 
         return held().accuracy_range(self.chosen_map)
 
@@ -412,8 +404,8 @@ class Explorer(rx.State):
         shown = self.summary
 
         return (
-            f"{shown['cells']} · {shown['players']} players · "
-            f"{shown['items']} maps · {shown['observations']:,} scores"
+            f"{shown['players']} players · {shown['items']} maps · "
+            f"{shown['observations']:,} scores · {shown['family']}"
         )
 
     @rx.var
@@ -478,7 +470,7 @@ class Explorer(rx.State):
     @rx.var
     def split_choices(self) -> list[str]:
         return [
-            "how much the map separates players",
+            "how much the map tells you",
             "player skill",
             "star rating",
             "how hard the map is",
@@ -506,8 +498,8 @@ class Explorer(rx.State):
             ]
             label = "accuracy an average player reaches"
         else:
-            values = [fit.maps[int(j)]["slope"] for j in fit.score_map[cells]]
-            label = "separates by"
+            values = [fit.maps[int(j)]["tells"] for j in fit.score_map[cells]]
+            label = "tells you"
 
         return keep_rated(fit, cells, values, label)
 
