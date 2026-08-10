@@ -67,6 +67,31 @@ uv run fit_skill_and_curves.py         # skill and map curves, against the score
 
 Requires `OSU_CLIENT_ID` / `OSU_CLIENT_SECRET` in `.env`.
 
+## An outside opinion about which maps test players
+
+o!TR publishes a weekly replica of its tournament database. It records
+which beatmaps each tournament put in its mappool, every match and game,
+and each score set, all keyed by osu! ids. `otr_dataset.py` downloads it,
+restores it into a PostgreSQL container of its own, and writes the parts
+this project can use to `otr.sqlite`.
+
+```
+uv run otr_dataset.py
+```
+
+A mappool is the opposite of farm: somebody picked those maps to tell
+players apart. Of the maps in the current panel, 631 have been pooled in a
+verified tournament and 545 never pooled. Their fitted steepness is the
+same to within 0.006 at matched star rating, so being chosen for a
+mappool does not show up in what this model measures.
+
+The dataset also carries four million tournament scores with accuracy,
+misses and mods, on maps that overlap the panel. Nothing fits on those
+yet.
+
+Dataset by the [osu! Tournament Rating project](https://otr.stagec.net/),
+whose terms require that credit.
+
 `explorer/` is a page for reading the last of those. It has a tab for the
 maps and one for the players, each sortable and filterable. A third shows
 where each score landed inside the distribution the model predicted for it.
